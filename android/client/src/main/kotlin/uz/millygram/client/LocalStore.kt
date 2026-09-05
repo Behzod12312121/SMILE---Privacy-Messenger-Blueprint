@@ -128,6 +128,10 @@ class LocalStore private constructor(
          */
         fun open(context: Context, name: String, passphrase: String): LocalStore {
             val helper = OpenHelper(context.applicationContext, name)
+            // Enabled on the helper, outside any transaction. WAL keeps a reader
+            // from blocking the writer, which matters because the delivery
+            // worker writes while the UI reads.
+            helper.setWriteAheadLoggingEnabled(true)
             val db = helper.writableDatabase
 
             db.query("vault", null, "id = 1", null, null, null, null).use { cursor ->
@@ -176,9 +180,20 @@ class LocalStore private constructor(
     private class OpenHelper(context: Context, name: String) :
         SQLiteOpenHelper(context, name, null, SCHEMA_VERSION) {
 
+        /**
+         * Both settings belong here rather than in onCreate.
+         *
+         * onCreate runs inside a transaction, and `PRAGMA journal_mode = WAL`
+         * cannot be executed inside one — it throws, so the vault could never
+         * be created at all. onConfigure runs before any transaction is open,
+         * and the framework's own setters are the supported way to reach both
+         * pragmas on Android.
+         */
+        override fun onConfigure(db: SQLiteDatabase) {
+            db.setForeignKeyConstraintsEnabled(true)
+        }
+
         override fun onCreate(db: SQLiteDatabase) {
-            db.execSQL("PRAGMA journal_mode = WAL")
-            db.execSQL("PRAGMA foreign_keys = ON")
             for (statement in SCHEMA) db.execSQL(statement)
         }
 

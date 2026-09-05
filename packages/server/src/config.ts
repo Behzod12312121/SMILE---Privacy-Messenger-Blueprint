@@ -87,7 +87,24 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     sweepIntervalMs: intFromEnv('MG_SWEEP_INTERVAL_MS', 60 * 60 * 1000),
     authTokenTtlMs: intFromEnv('MG_AUTH_TTL_MS', 15 * 60 * 1000),
     trustProxy: process.env.MG_TRUST_PROXY === '1',
-    rateLimits: DEFAULT_RATE_LIMITS,
+    /**
+     * Registration is the one limit an operator legitimately needs to move.
+     * The default assumes real humans on real handsets; a staging gateway, a
+     * migration, or an end-to-end test creates accounts far faster than any
+     * person would, and hitting a 429 there is not a security signal.
+     *
+     * Everything else stays fixed. These two are widened by configuration, not
+     * by editing the defaults, so production keeps the harsh values unless
+     * somebody deliberately says otherwise.
+     */
+    rateLimits: {
+      ...DEFAULT_RATE_LIMITS,
+      registration: {
+        capacity: intFromEnv('MG_REGISTRATION_CAPACITY', DEFAULT_RATE_LIMITS.registration.capacity),
+        refillPerSecond:
+          1 / intFromEnv('MG_REGISTRATION_INTERVAL_SECONDS', 60),
+      },
+    },
     bucketSize: intFromEnv('MG_BUCKET_SIZE', DEFAULT_BUCKET_SIZE),
     powDifficulty: intFromEnv('MG_POW_DIFFICULTY', 16),
     ...overrides,

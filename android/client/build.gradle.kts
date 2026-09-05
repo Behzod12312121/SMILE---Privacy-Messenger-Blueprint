@@ -12,12 +12,20 @@ android {
     namespace = "uz.millygram.client"
     compileSdk = 35
 
+    // Declared so AGP can find the strip tool. Without it libsignal ships with
+    // full debug symbols to every consumer of this library.
+    ndkVersion = "27.2.12479018"
+
     defaultConfig {
         // Android 8.0 covers the great majority of devices in Uzbekistan and
         // gives access to modern crypto APIs — Cipher AEAD, the AndroidX SQLite
         // wrapper, and a native SecureRandom that is not backed by /dev/random.
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The emulator reaches the host loopback at 10.0.2.2. The gateway runs
+        // on the developer machine; this is the only way the on-device test can
+        // exercise a real server rather than a mock of one.
+        testInstrumentationRunnerArguments["gatewayUrl"] = "http://10.0.2.2:8443"
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -44,6 +52,12 @@ android {
     // protocol framing). Anything that needs real Android or libsignal natives
     // belongs in androidTest, on a device.
     testOptions { unitTests.isReturnDefaultValues = true }
+
+    packaging {
+        // Test-only native code, ~127 MB per ABI, has no business being handed
+        // to anything that consumes this library.
+        jniLibs.excludes += setOf("**/libsignal_jni_testing.so")
+    }
 }
 
 dependencies {

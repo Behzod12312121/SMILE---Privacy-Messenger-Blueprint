@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { b64 } from '@millygram/protocol';
 import { buildApp } from './app.js';
 import { Authenticator } from './auth.js';
@@ -53,7 +54,19 @@ export async function startServer(overrides: Partial<ServerConfig> = {}): Promis
   };
 }
 
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
+/**
+ * Whether this module was run directly rather than imported.
+ *
+ * The hand-rolled version of this check built `file://` + a slash-swapped path,
+ * which produces `file://C:/...` on Windows while `import.meta.url` is
+ * `file:///C:/...` — three slashes against two. The comparison never matched,
+ * so `npm run relay` started nothing and exited 0, and no test caught it
+ * because every test starts the server in-process through `startServer()`.
+ *
+ * `pathToFileURL` is the function that knows how to do this on every platform.
+ */
+const isEntrypoint =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
   const server = await startServer();

@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { OBLIVIOUS_REQUEST_BYTES } from '@millygram/protocol';
 
@@ -204,8 +205,9 @@ export async function startObliviousRelay(options: ObliviousRelayOptions): Promi
   };
 }
 
+/** See the note in index.ts: the hand-rolled form of this never matched on Windows. */
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
   const gatewayUrl = process.env.MG_GATEWAY_URL;

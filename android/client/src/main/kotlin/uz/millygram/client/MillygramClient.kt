@@ -20,6 +20,18 @@ import org.signal.libsignal.protocol.kem.KEMPublicKey
 import org.signal.libsignal.protocol.state.PreKeyBundle
 import uz.millygram.protocol.Protocol
 
+/** How to reach a gateway and which local vault to use. */
+data class MillygramOptions(
+    val context: Context,
+    val databaseName: String,
+    val passphrase: String,
+    val serverUrl: String,
+    val obliviousRelayUrl: String? = null,
+    val http: OkHttpClient = OkHttpClient.Builder().build(),
+)
+
+data class MillygramRegisterOptions(val username: String, val base: MillygramOptions)
+
 /**
  * The messenger facade. Registration produces an account whose long-lived
  * secrets never leave the device; open reopens one; send and receive move
@@ -82,6 +94,21 @@ class MillygramClient private constructor(
             // close() raced us. Nothing to do; the vault is gone.
         }
     }
+
+    /* ---- application storage ---- */
+
+    /**
+     * A small namespaced area of the encrypted vault for the layer above.
+     *
+     * The app needs somewhere to keep things like which username belongs to
+     * which account id, and a contact list is exactly the sort of thing that
+     * must not sit in plain SharedPreferences. Namespacing keeps it from
+     * colliding with protocol state, and it inherits the vault's per-row AAD
+     * binding for free.
+     */
+    fun putAppData(key: String, value: String) = store.setMetaString("app:$key", value)
+
+    fun getAppData(key: String): String? = store.getMetaString("app:$key")
 
     /* ---- account discovery ---- */
 
@@ -375,18 +402,7 @@ class MillygramClient private constructor(
         private const val SAFETY_NUMBER_ITERATIONS = 5200
         private const val SAFETY_NUMBER_VERSION = 2
 
-        data class Options(
-            val context: Context,
-            val databaseName: String,
-            val passphrase: String,
-            val serverUrl: String,
-            val obliviousRelayUrl: String? = null,
-            val http: OkHttpClient = OkHttpClient.Builder().build(),
-        )
-
-        data class RegisterOptions(val username: String, val base: Options)
-
-        fun register(options: RegisterOptions): MillygramClient {
+        fun register(options: MillygramRegisterOptions): MillygramClient {
             require(Protocol.isValidUsername(options.username)) {
                 "username must be 3-32 characters of a-z, 0-9 or underscore"
             }
@@ -470,7 +486,7 @@ class MillygramClient private constructor(
             )
         }
 
-        fun open(options: Options): MillygramClient {
+        fun open(options: MillygramOptions): MillygramClient {
             val store = LocalStore.open(options.context, options.databaseName, options.passphrase)
 
             val identityRaw = store.getMeta(META_IDENTITY)
