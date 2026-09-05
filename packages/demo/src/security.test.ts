@@ -317,6 +317,52 @@ describe('abuse resistance', () => {
     victim.close();
     attacker.close();
   });
+
+  test('a drained account can still be messaged, with the ratchet intact', async () => {
+    const victim = await register('drainedvictim');
+    const sender = await register('drainedsender');
+
+    // Drained through the store rather than the API, because the rate limits
+    // that make this take half an hour over the wire are the subject of the
+    // test above, not this one. What matters here is the state they slow the
+    // attacker down from reaching, not how long it takes.
+    while (server.store.takeOneTimePreKey(victim.aci)) {
+      /* empty the pool */
+    }
+    assert.equal(server.store.countOneTimePreKeys(victim.aci), 0, 'the pool must actually be empty');
+
+    // Exhaustion must degrade forward secrecy for the opening message, not
+    // deny service. If a session could not be built without a one-time prekey,
+    // draining someone would stop anyone new from ever reaching them.
+    await sender.send(victim.username, 'no one-time prekey left');
+
+    const inbox: IncomingMessage[] = [];
+    await victim.catchUp((message) => {
+      inbox.push(message);
+    });
+
+    assert.equal(inbox.length, 1, 'a drained account must still receive');
+    assert.equal(inbox[0]!.body, 'no one-time prekey left');
+    assert.equal(inbox[0]!.senderAci, sender.aci, 'sealed sender still resolves');
+
+    // And the session that came out of that bundle has to keep working.
+    await victim.send(sender.aci, 'reply on the drained session');
+    const back: IncomingMessage[] = [];
+    await sender.catchUp((message) => {
+      back.push(message);
+    });
+    assert.equal(back.length, 1);
+    assert.equal(back[0]!.body, 'reply on the drained session');
+
+    assert.equal(
+      await sender.safetyNumber(victim.aci),
+      await victim.safetyNumber(sender.aci),
+      'a bundle served without a one-time prekey must not change either identity',
+    );
+
+    victim.close();
+    sender.close();
+  });
 });
 
 describe('bearer tokens', () => {
@@ -608,6 +654,88 @@ describe('identity pinning', () => {
     );
 
     store.close();
+  });
+});
+
+describe('a malicious gateway cannot read a conversation undetected', () => {
+  test('substituting an identity key costs delivery and is reported when the real contact writes', async () => {
+    const bob = await register('mitmbob');
+    const alice = await register('mitmalice');
+
+    // The operator tampers with their own database — no protocol violation
+    // needed, just an UPDATE.
+    //
+    // Swapping the identity key alone is not enough: the client checks that the
+    // signed and Kyber prekeys are signed by the advertised identity, and a
+    // half-substituted bundle is rejected outright with "not signed by the
+    // advertised identity key". So the attacker re-signs both prekeys with
+    // their own key, which anyone holding the database can do.
+    //
+    // The poisoning is applied only while Alice fetches, then reverted. A real
+    // operator would serve one bundle to Alice and leave Bob's record intact,
+    // because Bob authenticates with his real key and a permanently altered
+    // record would simply lock him out — announcing the attack.
+    const attacker = IdentityKeyPair.generate();
+    const raw = new Database(join(workdir, 'relay.db'));
+    const before = {
+      identity: (raw.prepare('SELECT identity_key AS k FROM accounts WHERE aci = ?')
+        .get(bob.aci) as { k: Buffer }).k,
+      signed: (raw.prepare('SELECT signature AS k FROM signed_prekeys WHERE aci = ?')
+        .get(bob.aci) as { k: Buffer }).k,
+      kyber: (raw.prepare('SELECT signature AS k FROM kyber_prekeys WHERE aci = ?')
+        .get(bob.aci) as { k: Buffer }).k,
+    };
+    const signedPub = (raw.prepare('SELECT public_key AS k FROM signed_prekeys WHERE aci = ?')
+      .get(bob.aci) as { k: Buffer }).k;
+    const kyberPub = (raw.prepare('SELECT public_key AS k FROM kyber_prekeys WHERE aci = ?')
+      .get(bob.aci) as { k: Buffer }).k;
+
+    raw.prepare('UPDATE accounts SET identity_key = ? WHERE aci = ?')
+      .run(Buffer.from(attacker.publicKey.serialize()), bob.aci);
+    raw.prepare('UPDATE signed_prekeys SET signature = ? WHERE aci = ?')
+      .run(Buffer.from(attacker.privateKey.sign(new Uint8Array(signedPub))), bob.aci);
+    raw.prepare('UPDATE kyber_prekeys SET signature = ? WHERE aci = ?')
+      .run(Buffer.from(attacker.privateKey.sign(new Uint8Array(kyberPub))), bob.aci);
+
+    // Alice has never spoken to Bob, so she has nothing pinned and accepts the
+    // bundle. This is the trust-on-first-use window every such system has.
+    await alice.send(bob.username, 'meant only for Bob');
+
+    raw.prepare('UPDATE accounts SET identity_key = ? WHERE aci = ?').run(before.identity, bob.aci);
+    raw.prepare('UPDATE signed_prekeys SET signature = ? WHERE aci = ?').run(before.signed, bob.aci);
+    raw.prepare('UPDATE kyber_prekeys SET signature = ? WHERE aci = ?').run(before.kyber, bob.aci);
+    raw.close();
+
+    // What the operator cannot do is stay invisible. The message was sealed to
+    // a key Bob does not hold, so Bob cannot open it: passive interception
+    // costs the operator delivery outright.
+    const inbox: IncomingMessage[] = [];
+    await bob.catchUp((message) => {
+      inbox.push(message);
+    });
+    assert.equal(inbox.length, 0, 'a substituted key must not still decrypt for Bob');
+
+    // And it does not survive contact with the real Bob. Alice now has the
+    // attacker's key pinned for Bob's account, so the moment Bob actually
+    // writes to her, his genuine identity fails that pin. Without this being
+    // reported the message would simply vanish into the same silence as every
+    // envelope addressed to another bucket member, and the attack would cost
+    // the operator nothing but one undelivered message.
+    const flagged: unknown[] = [];
+    alice.onUntrustedIdentity = (envelope) => flagged.push(envelope);
+
+    await bob.send(alice.aci, 'the real Bob, writing back');
+
+    const alicesInbox: IncomingMessage[] = [];
+    await alice.catchUp((message) => {
+      alicesInbox.push(message);
+    });
+
+    assert.equal(alicesInbox.length, 0, 'a message under an unpinned identity must not be delivered');
+    assert.equal(flagged.length, 1, 'the substitution must be reported, not swallowed as bucket noise');
+
+    alice.close();
+    bob.close();
   });
 });
 
