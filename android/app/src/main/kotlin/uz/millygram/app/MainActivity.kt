@@ -116,6 +116,7 @@ private fun MillyGramApp(onScreenSecurityChanged: (Boolean) -> Unit) {
                 busy = (current as? AppViewModel.State.Working)?.what,
                 error = (current as? AppViewModel.State.Failed)?.message,
                 defaultServer = model.serverUrl,
+                defaultRelay = model.relayUrl,
                 onRegister = model::register,
                 onUnlock = model::unlock,
                 onDismissError = model::dismissError,
@@ -190,7 +191,6 @@ private fun SignedIn(
                     navController.popBackStack()
                     navController.navigate(Route.conversation(it.aci))
                 },
-                onNewGroup = {},
                 // A username typed here has never been seen before, so the
                 // send has to resolve it before there is a conversation to open.
                 onStartWithUsername = { username ->
@@ -205,10 +205,6 @@ private fun SignedIn(
             SettingsScreen(
                 account = session.toAccount(screenLock),
                 onBack = { navController.popBackStack() },
-                onSafetyNumber = {
-                    conversations.firstOrNull()?.let { navController.navigate(Route.safety(it.aci)) }
-                },
-                onDevices = {},
                 onToggleScreenLock = {
                     screenLock = it
                     onScreenSecurityChanged(it)
@@ -312,17 +308,14 @@ private fun MillygramSession.toAccount(screenLock: Boolean) =
     uz.millygram.app.ui.Account(
         displayName = username,
         username = username,
-        safetyNumber = "",
-        deviceCount = 1,
-        keyTransparencyVerified = false,
         screenLock = screenLock,
         language = "Oʻzbekcha (lotin)",
         theme = "Tizim",
         buildHash = BuildConfigHash,
     )
 
-/** Stands in for a reproducible-build hash until the build actually produces one. */
-private const val BuildConfigHash = "dev"
+/** The commit this APK was built from, stamped in by Gradle. */
+private val BuildConfigHash = BuildConfig.GIT_SHA
 
 private const val TRANSITION_MS = 220
 

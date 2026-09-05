@@ -49,6 +49,12 @@ class Transport(
 
     private var token: Token? = null
 
+    /**
+     * The gateway's HPKE public key, fetched once and kept. Submissions are
+     * sealed to it so the relay forwards a body it cannot read.
+     */
+    private var obliviousKey: ByteArray? = null
+
     fun setCredentials(newCredentials: Credentials) {
         credentials = newCredentials
         token = null
@@ -118,8 +124,15 @@ class Transport(
         return DeliveryCertificate(body.getString("certificate"), body.getLong("expiresAt"))
     }
 
+    /**
+     * Fetched from the gateway directly rather than through the relay: it is a
+     * public key, the request carries no authentication, and asking the relay
+     * for it would tell the relay which gateway this device talks to.
+     */
     fun fetchObliviousPublicKey(): ByteArray {
+        obliviousKey?.let { return it }
         return Protocol.unb64(json(get("/v1/oblivious-key")).getString("publicKey"))
+            .also { obliviousKey = it }
     }
 
     /* ---- messages ---- */
@@ -131,11 +144,11 @@ class Transport(
      * address. Without the relay it goes straight to the gateway, still
      * anonymous in every other respect.
      */
-    fun submit(bucketId: Long, content: ByteArray, difficulty: Int, gatewayObliviousKey: ByteArray? = null) {
+    fun submit(bucketId: Long, content: ByteArray, difficulty: Int) {
         val nonce = Protocol.solveProofOfWork(bucketId, content, difficulty)
 
         val relayUrl = obliviousRelayUrl
-        if (relayUrl == null || gatewayObliviousKey == null) {
+        if (relayUrl == null) {
             val body = JSONObject().apply {
                 put("bucketId", bucketId)
                 put("content", Protocol.b64(content))
@@ -146,7 +159,7 @@ class Transport(
         }
 
         val encoded = Protocol.encodeObliviousRequest(bucketId, nonce, content)
-        val sealed = sealForGateway(gatewayObliviousKey, encoded)
+        val sealed = sealForGateway(fetchObliviousPublicKey(), encoded)
         val response = client
             .newCall(
                 Request.Builder()

@@ -46,8 +46,6 @@ import uz.millygram.app.theme.theme
 fun SettingsScreen(
     account: Account,
     onBack: () -> Unit,
-    onSafetyNumber: () -> Unit,
-    onDevices: () -> Unit,
     onToggleScreenLock: (Boolean) -> Unit,
 ) {
     Column(
@@ -86,29 +84,24 @@ fun SettingsScreen(
         Spacer(Modifier.padding(top = Space.xl))
         SectionHeader("Xavfsizlik")
         Card {
+            // A safety number belongs to a pair of people, not to an account,
+            // so it is reached from the conversation it describes. A row here
+            // could only pick one arbitrarily.
             SettingsRow(
                 label = "Xavfsizlik raqami",
-                value = account.safetyNumber.take(9),
-                valueMono = true,
+                value = "Har suhbatda alohida",
+                enabled = false,
                 leading = { KeyGlyph(theme.textSecondary) },
-                trailing = { Chevron() },
-                onClick = onSafetyNumber,
             )
             RowSeparator()
-            SettingsRow(
-                label = "Kalit shaffofligi",
-                value = if (account.keyTransparencyVerified) "Tasdiqlangan" else "Tekshirilmagan",
-                valueColor = if (account.keyTransparencyVerified) theme.verified else theme.textTertiary,
-                leading = { ShieldGlyph(theme.textSecondary) },
-                trailing = { Chevron() },
-            )
-            RowSeparator()
+            // Not a chevron. An account is one device by design — there is no
+            // linked-device protocol to show a list of, and a row that opened
+            // an empty screen would imply there is.
             SettingsRow(
                 label = "Faol qurilmalar",
-                value = "${account.deviceCount} ta",
+                value = "Bitta (shu qurilma)",
+                enabled = false,
                 leading = { DeviceGlyph(theme.textSecondary) },
-                trailing = { Chevron() },
-                onClick = onDevices,
             )
         }
 
@@ -167,7 +160,7 @@ fun SettingsScreen(
         ) {
             Text("MillyGram 1.0 · Ochiq kodli", style = MillyType.Timestamp, color = theme.textTertiary)
             Text(
-                "Takrorlanuvchi qurilish · ${account.buildHash}",
+                "Qurilish · ${account.buildHash}",
                 style = MillyType.Timestamp,
                 color = theme.textDisabled,
             )

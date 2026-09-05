@@ -58,7 +58,6 @@ fun NewChatScreen(
     myUsername: String,
     onCancel: () -> Unit,
     onSelect: (Contact) -> Unit,
-    onNewGroup: () -> Unit,
     /** Starting a conversation with a handle that is not yet a contact. */
     onStartWithUsername: (String) -> Unit = {},
 ) {
@@ -108,22 +107,6 @@ fun NewChatScreen(
             )
         }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onNewGroup)
-                .padding(horizontal = Space.gutter, vertical = 10.dp),
-        ) {
-            Box(
-                Modifier.size(46.dp).clip(CircleShape).background(theme.accentMuted),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.GroupAdd, null, tint = theme.accent, modifier = Modifier.size(21.dp))
-            }
-            Spacer(Modifier.width(15.dp))
-            Text("Yangi guruh", style = MillyType.Label, color = theme.accent)
-        }
 
         if (query.length >= 3 && recents.none { it.username == query }) {
             Row(

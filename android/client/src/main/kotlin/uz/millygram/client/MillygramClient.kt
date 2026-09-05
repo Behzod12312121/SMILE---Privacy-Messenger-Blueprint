@@ -60,7 +60,6 @@ class MillygramClient private constructor(
 ) : Closeable {
 
     /** Bounded cache to avoid a network round-trip on every send. */
-    private var cachedObliviousKey: ByteArray? = null
 
     /**
      * Single worker so envelope handling — and therefore the cursor — is
@@ -230,7 +229,7 @@ class MillygramClient private constructor(
         val sealed = cipher.encrypt(address, deliveryCertificate(), payload)
 
         val padded = Protocol.pad(sealed)
-        transport.submit(target.bucketId, padded, powDifficulty, ensureObliviousKey())
+        transport.submit(target.bucketId, padded, powDifficulty)
     }
 
     data class IncomingMessage(
@@ -430,14 +429,7 @@ class MillygramClient private constructor(
 
     /* ---- internals ---- */
 
-    private fun ensureObliviousKey(): ByteArray? {
-        cachedObliviousKey?.let { return it }
-        return try {
-            transport.fetchObliviousPublicKey().also { cachedObliviousKey = it }
-        } catch (_: TransportError) {
-            null
-        }
-    }
+
 
     companion object {
 

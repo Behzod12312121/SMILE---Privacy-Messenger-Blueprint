@@ -57,13 +57,15 @@ fun OnboardingScreen(
     busy: String?,
     error: String?,
     defaultServer: String,
-    onRegister: (username: String, passphrase: String, server: String) -> Unit,
-    onUnlock: (passphrase: String, server: String) -> Unit,
+    defaultRelay: String,
+    onRegister: (username: String, passphrase: String, server: String, relay: String) -> Unit,
+    onUnlock: (passphrase: String, server: String, relay: String) -> Unit,
     onDismissError: () -> Unit,
 ) {
     var username by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
     var server by remember { mutableStateOf(defaultServer) }
+    var relay by remember { mutableStateOf(defaultRelay) }
     var showServer by remember { mutableStateOf(false) }
 
     Column(
@@ -135,7 +137,19 @@ fun OnboardingScreen(
         )
         if (showServer) {
             Spacer(Modifier.height(Space.sm))
+            FieldLabel("Server")
             Field(value = server, placeholder = "http://…", onValueChange = { server = it })
+            Spacer(Modifier.height(Space.md))
+            FieldLabel("Yuborish relesi")
+            Field(value = relay, placeholder = "http://… (ixtiyoriy)", onValueChange = { relay = it })
+            Spacer(Modifier.height(Space.sm))
+            Text(
+                "Rele xabarni ocholmaydi — u faqat serverga uzatadi. Shu sababli " +
+                    "server sizning IP manzilingizni koʻrmaydi. Boʻsh qoldirsangiz, " +
+                    "xabarlar toʻgʻridan-toʻgʻri serverga boradi.",
+                style = MillyType.Timestamp,
+                color = theme.textTertiary,
+            )
         }
 
         if (error != null) {
@@ -162,7 +176,11 @@ fun OnboardingScreen(
                 .clip(RoundedCornerShape(14.dp))
                 .background(if (ready) theme.accent else theme.field)
                 .clickable(enabled = ready) {
-                    if (creating) onRegister(username, passphrase, server) else onUnlock(passphrase, server)
+                    if (creating) {
+                        onRegister(username, passphrase, server, relay)
+                    } else {
+                        onUnlock(passphrase, server, relay)
+                    }
                 }
                 .padding(vertical = 15.dp),
             contentAlignment = Alignment.Center,

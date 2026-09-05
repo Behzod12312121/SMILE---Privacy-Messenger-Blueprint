@@ -24,6 +24,14 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +66,15 @@ fun ChatListScreen(
     onSettings: () -> Unit,
     connection: ConnectionState = ConnectionState.Online,
 ) {
+    var query by remember { mutableStateOf("") }
+    val shown = remember(conversations, query) {
+        if (query.isBlank()) {
+            conversations
+        } else {
+            conversations.filter { it.displayName.contains(query, ignoreCase = true) }
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -80,7 +97,7 @@ fun ChatListScreen(
             modifier = Modifier.padding(start = Space.gutter, end = Space.gutter, top = Space.xs, bottom = 14.dp),
         )
 
-        SearchField()
+        SearchField(query) { query = it }
 
         // An empty list and a dead socket look identical, so the state that
         // means "you may be missing messages" has to say so.
@@ -88,9 +105,11 @@ fun ChatListScreen(
 
         if (conversations.isEmpty()) {
             EmptyChats(onNewChat)
+        } else if (shown.isEmpty()) {
+            NoMatches(query)
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(conversations, key = { it.aci }) { conversation ->
+                items(shown, key = { it.aci }) { conversation ->
                     ConversationRow(conversation) { onOpenConversation(conversation) }
                 }
                 item { Spacer(Modifier.height(Space.xl)) }
@@ -115,7 +134,7 @@ private fun IconAction(
 }
 
 @Composable
-private fun SearchField() {
+private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -129,7 +148,33 @@ private fun SearchField() {
             .padding(horizontal = 13.dp),
     ) {
         Icon(Icons.Rounded.Search, null, tint = theme.textTertiary, modifier = Modifier.size(17.dp))
-        Text("Qidirish", style = MillyType.Preview, color = theme.textTertiary)
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (query.isEmpty()) {
+                Text("Qidirish", style = MillyType.Preview, color = theme.textTertiary)
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                // Names only, and only names already on this device. Nothing
+                // typed here is sent anywhere.
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                textStyle = MillyType.Preview.merge(TextStyle(color = theme.textPrimary)),
+                cursorBrush = SolidColor(theme.accent),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NoMatches(query: String) {
+    Box(Modifier.fillMaxWidth().padding(Space.xxl), contentAlignment = Alignment.Center) {
+        Text(
+            "\"$query\" boʻyicha hech narsa topilmadi",
+            style = MillyType.Notice,
+            color = theme.textSecondary,
+        )
     }
 }
 

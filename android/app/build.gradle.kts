@@ -20,6 +20,11 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+
+        // The build identifier shown in settings. It names the exact commit a
+        // handset is running, so a report about behaviour can be tied to
+        // source rather than to a version string that never changes.
+        buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
     }
 
     compileOptions {
@@ -36,7 +41,10 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     buildTypes {
         release {
@@ -99,3 +107,13 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.compose.ui:ui-tooling-preview")
 }
+
+/** The short commit hash, or "unknown" outside a git checkout. */
+fun gitSha(): String = runCatching {
+    val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    if (process.waitFor() == 0 && output.isNotEmpty()) output else "unknown"
+}.getOrDefault("unknown")

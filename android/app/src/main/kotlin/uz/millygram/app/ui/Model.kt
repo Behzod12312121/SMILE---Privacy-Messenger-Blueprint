@@ -61,9 +61,6 @@ sealed interface TimelineItem {
 data class Account(
     val displayName: String,
     val username: String,
-    val safetyNumber: String,
-    val deviceCount: Int,
-    val keyTransparencyVerified: Boolean,
     val screenLock: Boolean,
     val language: String,
     val theme: String,

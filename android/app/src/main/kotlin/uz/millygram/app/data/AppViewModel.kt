@@ -42,7 +42,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var serverUrl: String = DEFAULT_SERVER
         private set
 
-    fun register(username: String, passphrase: String, server: String) {
+    /**
+     * Where submissions go. The relay forwards a body sealed to the gateway's
+     * key, so it learns the sender's address and nothing else, while the
+     * gateway learns the envelope and not who sent it. Neither half alone links
+     * a sender to a bucket, which is the whole point of running two of them.
+     */
+    var relayUrl: String = DEFAULT_RELAY
+        private set
+
+    fun register(username: String, passphrase: String, server: String, relay: String) {
         if (!Protocol.isValidUsername(username)) {
             _state.value = State.Failed(
                 "Foydalanuvchi nomi 3–32 ta belgi boʻlishi kerak: a–z, 0–9 yoki _",
@@ -59,11 +68,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
+        relayUrl = relay.trim()
         _state.value = State.Working("Hisob yaratilmoqda…")
 
         viewModelScope.launch {
             runCatching {
-                MillygramSession.register(getApplication(), username, passphrase, serverUrl)
+                MillygramSession.register(
+                    getApplication(),
+                    username,
+                    passphrase,
+                    serverUrl,
+                    relayUrl.ifEmpty { null },
+                )
             }.onSuccess { session ->
                 session.connect()
                 _state.value = State.Ready(session)
@@ -73,13 +89,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun unlock(passphrase: String, server: String) {
+    fun unlock(passphrase: String, server: String, relay: String) {
         serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
+        relayUrl = relay.trim()
         _state.value = State.Working("Ochilmoqda…")
 
         viewModelScope.launch {
             runCatching {
-                MillygramSession.open(getApplication(), passphrase, serverUrl)
+                MillygramSession.open(
+                    getApplication(),
+                    passphrase,
+                    serverUrl,
+                    relayUrl.ifEmpty { null },
+                )
             }.onSuccess { session ->
                 session.connect()
                 _state.value = State.Ready(session)
@@ -126,6 +148,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val DEFAULT_SERVER = "http://10.0.2.2:8443"
+        const val DEFAULT_RELAY = "http://10.0.2.2:8444"
 
         /**
          * The vault key is derived from this, so its length is the real

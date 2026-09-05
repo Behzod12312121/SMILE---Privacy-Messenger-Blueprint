@@ -47,7 +47,7 @@ class EndToEndTest {
 
     private val vaults = mutableMapOf<String, Pair<String, String>>()
 
-    private fun register(label: String): MillygramClient {
+    private fun register(label: String, relayUrl: String? = null): MillygramClient {
         val database = freshDatabase(label)
         val passphrase = "instrumented test passphrase for $label"
         val client = MillygramClient.register(
@@ -58,6 +58,7 @@ class EndToEndTest {
                     databaseName = database,
                     passphrase = passphrase,
                     serverUrl = gatewayUrl,
+                    obliviousRelayUrl = relayUrl,
                 ),
             ),
         )
@@ -148,6 +149,30 @@ class EndToEndTest {
         // keys would be indistinguishable from ordinary traffic.
         assertEquals("the mismatch must be reported exactly once", 1, reported.size)
         assertEquals("the report must name the sender", alisher.aci, reported[0])
+    }
+
+    @Test
+    fun aConfiguredRelayIsNeverBypassed() {
+        // Port 1 has nothing on it. The gateway is reachable throughout, so a
+        // client that quietly fell back to submitting directly would succeed
+        // here — and the sender's address would reach the gateway despite the
+        // user having asked for a relay. Downgrading a privacy control without
+        // saying so is worse than failing, so this must throw.
+        val sender = register("relaya", relayUrl = "http://127.0.0.1:1")
+        val recipient = register("relayb")
+
+        var threw = false
+        try {
+            sender.send(recipient.username, "rele orqali")
+        } catch (_: Throwable) {
+            threw = true
+        }
+
+        assertTrue("a send through an unreachable relay must fail", threw)
+
+        val received = mutableListOf<MillygramClient.IncomingMessage>()
+        recipient.catchUp { received += it }
+        assertTrue("nothing may reach the gateway by the direct path", received.isEmpty())
     }
 
     @Test
