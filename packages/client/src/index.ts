@@ -412,6 +412,24 @@ export class MillygramClient {
   }
 
   /**
+   * Forgets everything pinned about a contact: the session and the identity key.
+   *
+   * This is the only way out of an identity change. Until it is called the old
+   * key stays pinned, so every message the contact sends is rejected and the
+   * conversation is dead in both directions — which is correct when someone is
+   * substituting keys, and wrong when the contact simply reinstalled, the far
+   * commoner case. The next message re-establishes from a fresh bundle and
+   * pins whatever it carries, so this puts the conversation back into
+   * trust-on-first-use and must be an explicit choice by someone who has
+   * looked at the safety number, never something the client decides.
+   */
+  forgetPeer(aci: string): void {
+    const address = `${aci}.${DEVICE_ID_PRIMARY}`;
+    this.store.deleteRecord('sessions', address);
+    this.store.deleteIdentity(address);
+  }
+
+  /**
    * Called when an envelope fails to open because the sender's identity key is
    * not the one pinned for them. The UI should surface this rather than let it
    * pass as noise.

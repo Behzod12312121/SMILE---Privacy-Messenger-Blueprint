@@ -239,6 +239,11 @@ export class LocalStore {
       .run(address, seal(this.dek, aad('identities', address), key));
   }
 
+  /** Unpins a contact's identity. See MillygramClient.forgetPeer. */
+  deleteIdentity(address: string): void {
+    this.db.prepare('DELETE FROM identities WHERE address = ?').run(address);
+  }
+
   markKyberUsed(id: number): void {
     this.db.prepare('UPDATE kyber_prekeys SET used = 1 WHERE id = ?').run(id);
   }

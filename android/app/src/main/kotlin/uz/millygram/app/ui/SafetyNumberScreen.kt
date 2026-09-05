@@ -56,6 +56,9 @@ fun SafetyNumberScreen(
     verified: Boolean,
     onBack: () -> Unit,
     onMarkVerified: () -> Unit,
+    /** True when this contact's key changed and the conversation is stalled. */
+    identityChanged: Boolean = false,
+    onAcceptNewKey: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -124,20 +127,50 @@ fun SafetyNumberScreen(
                 .padding(horizontal = Space.gutter)
                 .padding(bottom = Space.xl, top = Space.md),
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (verified) theme.field else theme.accent)
-                    .clickable(onClick = onMarkVerified)
-                    .padding(vertical = 15.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (verified) "Tasdiqni bekor qilish" else "Tasdiqlandi deb belgilash",
-                    style = MillyType.Label,
-                    color = if (verified) theme.textSecondary else theme.onAccent,
-                )
+            if (identityChanged) {
+                // While the old key stays pinned this contact cannot reach the
+                // user at all, so the screen has to offer a way out. It says
+                // what accepting means, because the honest answer is that the
+                // two explanations — a reinstall, or someone in the middle —
+                // are indistinguishable from here, and only comparing the
+                // number above tells them apart.
+                Column {
+                    Text(
+                        "Bu raqam oʻzgargan. Odatda bu suhbatdosh ilovani qayta " +
+                            "oʻrnatgani bildiradi. Agar raqam yuqoridagidan farq qilsa, " +
+                            "kimdir suhbatga aralashayotgan boʻlishi mumkin.",
+                        style = MillyType.Notice,
+                        color = theme.textSecondary,
+                    )
+                    Spacer(Modifier.height(Space.lg))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(theme.accent)
+                            .clickable(onClick = onAcceptNewKey)
+                            .padding(vertical = 15.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Yangi kalitni qabul qilish", style = MillyType.Label, color = theme.onAccent)
+                    }
+                }
+            } else {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (verified) theme.field else theme.accent)
+                        .clickable(onClick = onMarkVerified)
+                        .padding(vertical = 15.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (verified) "Tasdiqni bekor qilish" else "Tasdiqlandi deb belgilash",
+                        style = MillyType.Label,
+                        color = if (verified) theme.textSecondary else theme.onAccent,
+                    )
+                }
             }
         }
     }

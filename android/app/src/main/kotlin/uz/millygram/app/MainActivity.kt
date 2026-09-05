@@ -242,13 +242,9 @@ private fun SignedIn(
                     safetyNumber = resolved,
                     verified = verified,
                     onBack = { navController.popBackStack() },
-                    onMarkVerified = {
-                        verified = !verified
-                        // Comparing the number is the only thing that resolves
-                        // the warning, so acknowledging it here and nowhere
-                        // else keeps the banner honest.
-                        if (verified) session.acknowledgeIdentityWarning(aci)
-                    },
+                    onMarkVerified = { verified = !verified },
+                    identityChanged = aci in identityWarnings,
+                    onAcceptNewKey = { scope.launch { session.acceptNewIdentity(aci) } },
                 )
             }
         }

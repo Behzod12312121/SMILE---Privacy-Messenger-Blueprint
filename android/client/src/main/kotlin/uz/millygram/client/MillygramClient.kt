@@ -270,6 +270,27 @@ class MillygramClient private constructor(
     )
 
     /**
+     * Forgets everything pinned about a contact: the session and the identity
+     * key.
+     *
+     * This is the only way out of an identity change. Until it is called the
+     * old key stays pinned, so every message the contact sends is rejected and
+     * the conversation is dead in both directions — correct when someone is
+     * substituting keys, wrong when the contact simply reinstalled, which is
+     * the far commoner case. The next message re-establishes from a fresh
+     * bundle and pins whatever it carries, so this returns the conversation to
+     * trust on first use and must be an explicit choice by someone who has
+     * looked at the safety number, never something the client decides.
+     */
+    fun forgetPeer(peerAci: String) {
+        exclusive {
+            val address = "$peerAci.${Protocol.DEVICE_ID_PRIMARY}"
+            store.deleteRecord("sessions", address)
+            store.deleteRecord("identities", address)
+        }
+    }
+
+    /**
      * Called when an envelope arrives from a contact whose pinned identity key
      * no longer matches. Set it before [connect]; it is invoked on the
      * delivery thread, so implementations must not block.

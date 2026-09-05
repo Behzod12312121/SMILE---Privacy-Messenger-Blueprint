@@ -734,6 +734,23 @@ describe('a malicious gateway cannot read a conversation undetected', () => {
     assert.equal(alicesInbox.length, 0, 'a message under an unpinned identity must not be delivered');
     assert.equal(flagged.length, 1, 'the substitution must be reported, not swallowed as bucket noise');
 
+    // The warning has to lead somewhere. Until the old key is unpinned the
+    // conversation is dead in both directions, and that is the same state a
+    // contact who merely reinstalled would leave behind — the commoner case by
+    // far. Forgetting the peer puts it back to trust on first use.
+    alice.forgetPeer(bob.aci);
+    await bob.send(alice.aci, 'reachable again after accepting the new key');
+
+    const recovered: IncomingMessage[] = [];
+    await alice.catchUp((message) => {
+      recovered.push(message);
+    });
+    assert.deepEqual(
+      recovered.map((message) => message.body),
+      ['reachable again after accepting the new key'],
+      'unpinning must let the real contact through again',
+    );
+
     alice.close();
     bob.close();
   });

@@ -140,8 +140,13 @@ class MillygramSession private constructor(
         }
     }
 
-    /** Clears the warning once the user has looked at the safety number. */
-    fun acknowledgeIdentityWarning(peerAci: String) {
+    /**
+     * Accepts a contact's new identity: unpins the old key so messages can flow
+     * again, and clears the warning. Dismissing the warning without this leaves
+     * the conversation silently broken, so the two belong together.
+     */
+    suspend fun acceptNewIdentity(peerAci: String) = withContext(Dispatchers.IO) {
+        client.forgetPeer(peerAci)
         _identityWarnings.update { it - peerAci }
     }
 
