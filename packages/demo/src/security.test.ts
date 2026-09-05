@@ -611,6 +611,39 @@ describe('identity pinning', () => {
   });
 });
 
+describe('the ratchet survives concurrent use', () => {
+  test('two sends issued at once are both delivered', async () => {
+    const sender = await register('racesend');
+    const receiver = await register('racerecv');
+
+    // Establish the session first, so this exercises concurrent use of an
+    // existing ratchet rather than concurrent session setup.
+    await sender.send(receiver.username, 'warm up');
+    await receiver.catchUp(() => {});
+
+    // The Double Ratchet is read-modify-write. Unserialised, both of these
+    // encrypt from the same session state and the later write discards the
+    // earlier ratchet advance: both calls resolve, the relay accepts both
+    // envelopes, and the recipient can only follow one chain — so one message
+    // is lost with nothing reporting a failure.
+    await Promise.all([sender.send(receiver.aci, 'one'), sender.send(receiver.aci, 'two')]);
+
+    const inbox: IncomingMessage[] = [];
+    await receiver.catchUp((message) => {
+      inbox.push(message);
+    });
+
+    assert.deepEqual(
+      inbox.map((message) => message.body).sort(),
+      ['one', 'two'],
+      'a concurrent send must not be silently dropped',
+    );
+
+    sender.close();
+    receiver.close();
+  });
+});
+
 describe('oblivious submission', () => {
   test('a message sent through the relay is delivered normally', async () => {
     const relay = await startObliviousRelay({ gatewayUrl: server.url, host: '127.0.0.1', port: 0 });

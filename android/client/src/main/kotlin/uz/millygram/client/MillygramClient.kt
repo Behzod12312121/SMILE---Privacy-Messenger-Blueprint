@@ -216,20 +216,49 @@ class MillygramClient private constructor(
                 ?: throw IllegalStateException("no delivery bucket known for $recipient"),
         )
 
-        val address = ensureSession(target.aci, target.deviceId)
+        // Everything from here on reads and writes the session record, and the
+        // Double Ratchet is read-modify-write: two sends that interleave both
+        // encrypt from the same state and the second write discards the first's
+        // ratchet advance. Both sends report success, the relay accepts both
+        // envelopes, and the recipient can only follow one chain — so one
+        // message is silently undeliverable. Running on the same single thread
+        // that consumes envelopes keeps every mutation of that record in one
+        // order, which also covers a send racing an incoming message.
+        exclusive {
+            val address = ensureSession(target.aci, target.deviceId)
 
-        val payload = JSONObject().apply {
-            put("v", 1)
-            put("body", body)
-            put("sentAt", System.currentTimeMillis())
-            put("bucketId", bucketId)
-        }.toString().toByteArray(Charsets.UTF_8)
+            val payload = JSONObject().apply {
+                put("v", 1)
+                put("body", body)
+                put("sentAt", System.currentTimeMillis())
+                put("bucketId", bucketId)
+            }.toString().toByteArray(Charsets.UTF_8)
 
-        val cipher = SealedSessionCipher(combined, UUID.fromString(aci), null, deviceId)
-        val sealed = cipher.encrypt(address, deliveryCertificate(), payload)
+            val cipher = SealedSessionCipher(combined, UUID.fromString(aci), null, deviceId)
+            val sealed = cipher.encrypt(address, deliveryCertificate(), payload)
 
-        val padded = Protocol.pad(sealed)
-        transport.submit(target.bucketId, padded, powDifficulty)
+            val padded = Protocol.pad(sealed)
+            transport.submit(target.bucketId, padded, powDifficulty)
+        }
+    }
+
+    /**
+     * Runs a task on the delivery thread and waits for it, unwrapping the
+     * failure so callers still see the original exception. Called from the
+     * delivery thread itself this would deadlock, so it never is.
+     */
+    private fun <T> exclusive(task: () -> T): T {
+        check(!closed) { "client is closed" }
+        val future = try {
+            worker.submit(java.util.concurrent.Callable { task() })
+        } catch (rejected: java.util.concurrent.RejectedExecutionException) {
+            throw IllegalStateException("client is closed", rejected)
+        }
+        return try {
+            future.get()
+        } catch (failed: java.util.concurrent.ExecutionException) {
+            throw failed.cause ?: failed
+        }
     }
 
     data class IncomingMessage(

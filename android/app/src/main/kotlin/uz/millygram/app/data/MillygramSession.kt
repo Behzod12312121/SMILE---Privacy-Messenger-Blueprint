@@ -55,6 +55,16 @@ class MillygramSession private constructor(
 
     enum class Status { Offline, Connecting, Online }
 
+    /**
+     * Message ids only have to be unique, and unique is the whole job: the
+     * timeline keys its list on them, and Compose throws when two rows share a
+     * key. Deriving them from the send time collided whenever two messages were
+     * recorded in the same millisecond — two quick taps on send is enough.
+     * They are deliberately not persisted; nothing outside a single run refers
+     * to them.
+     */
+    private val nextId = java.util.concurrent.atomic.AtomicLong(1)
+
     private var subscription: Closeable? = null
     private var reconnectJob: Job? = null
     private var dropped = CompletableDeferred<Unit>()
@@ -218,7 +228,7 @@ class MillygramSession private constructor(
         outgoing: Boolean,
         delivery: Delivery? = null,
     ): Long {
-        val id = sentAt * 10 + if (outgoing) 1 else 0
+        val id = nextId.getAndIncrement()
         _conversations.update { current ->
             val existing = current.firstOrNull { it.aci == peerAci }
             val message = MessageState(
@@ -312,8 +322,7 @@ class MillygramSession private constructor(
                     messages = (0 until messages.length()).map { messageIndex ->
                         val message = messages.getJSONObject(messageIndex)
                         MessageState(
-                            id = message.getLong("sentAt") * 10 +
-                                if (message.getBoolean("outgoing")) 1 else 0,
+                            id = nextId.getAndIncrement(),
                             body = message.getString("body"),
                             sentAt = message.getLong("sentAt"),
                             outgoing = message.getBoolean("outgoing"),

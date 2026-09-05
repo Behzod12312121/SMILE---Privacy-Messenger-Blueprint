@@ -176,6 +176,45 @@ class EndToEndTest {
     }
 
     @Test
+    fun twoSendsAtOnceAreBothDelivered() {
+        val sender = register("racea")
+        val receiver = register("raceb")
+
+        // Establish the session first, so this exercises concurrent use of an
+        // existing ratchet rather than concurrent session setup.
+        sender.send(receiver.username, "warm up")
+        receiver.catchUp { }
+
+        // The Double Ratchet is read-modify-write. Unserialised, both threads
+        // encrypt from the same session state and the later write discards the
+        // earlier ratchet advance: both calls return normally, the relay takes
+        // both envelopes, and the recipient can only follow one chain — so one
+        // message is lost with nothing reporting a failure.
+        val start = java.util.concurrent.CountDownLatch(1)
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val threads = listOf("one", "two").map { body ->
+            Thread {
+                start.await()
+                runCatching { sender.send(receiver.aci, body) }
+                    .onFailure { failures += it }
+            }.also { it.start() }
+        }
+        start.countDown()
+        threads.forEach { it.join(60_000) }
+
+        assertTrue("neither send should fail: $failures", failures.isEmpty())
+
+        val received = mutableListOf<String>()
+        receiver.catchUp { received += it.body }
+
+        assertEquals(
+            "a concurrent send must not be silently dropped",
+            listOf("one", "two"),
+            received.sorted(),
+        )
+    }
+
+    @Test
     fun bothSidesComputeTheSameSafetyNumber() {
         val alisher = register("safetya")
         val nodira = register("safetyb")

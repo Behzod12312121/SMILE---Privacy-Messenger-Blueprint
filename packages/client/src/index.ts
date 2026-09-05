@@ -302,24 +302,47 @@ export class MillygramClient {
       ? await this.resolveUsername(recipient)
       : { aci: recipient, deviceId: DEVICE_ID_PRIMARY };
 
-    const address = await this.ensureSession(target.aci, target.deviceId);
-    const bucketId = this.store.getMetaNumber(peerBucketMeta(target.aci));
-    if (bucketId === null) throw new Error(`no delivery bucket known for ${target.aci}`);
+    // Everything from here on reads and writes the session record, and the
+    // Double Ratchet is read-modify-write: two sends that interleave both
+    // encrypt from the same state and the second write discards the first's
+    // ratchet advance. The sender sees two successes, the relay accepts two
+    // envelopes, and the recipient can only follow one chain — so one message
+    // is silently undeliverable. Sharing the queue that serialises envelope
+    // handling keeps every mutation of that record in one order, which also
+    // covers a send racing an incoming message.
+    return this.exclusive(async () => {
+      const address = await this.ensureSession(target.aci, target.deviceId);
+      const bucketId = this.store.getMetaNumber(peerBucketMeta(target.aci));
+      if (bucketId === null) throw new Error(`no delivery bucket known for ${target.aci}`);
 
-    const payload: MessagePayload = { v: 1, body, sentAt: Date.now(), bucketId: this.bucketId };
+      const payload: MessagePayload = { v: 1, body, sentAt: Date.now(), bucketId: this.bucketId };
 
-    const sealed = await sealedSenderEncryptMessage(
-      bytes(Buffer.from(JSON.stringify(payload), 'utf8')),
-      address,
-      await this.deliveryCertificate(),
-      this.stores.session,
-      this.stores.identity,
+      const sealed = await sealedSenderEncryptMessage(
+        bytes(Buffer.from(JSON.stringify(payload), 'utf8')),
+        address,
+        await this.deliveryCertificate(),
+        this.stores.session,
+        this.stores.identity,
+      );
+
+      // Padded after encryption, not before: the ciphertext itself grows and
+      // shrinks with ratchet state, so only padding the finished envelope makes
+      // every envelope the same size.
+      await this.transport.submit(bucketId, pad(sealed), this.powDifficulty);
+    });
+  }
+
+  /**
+   * Runs a task after everything already queued, and keeps the chain alive
+   * when the task rejects so one failed send cannot wedge every later one.
+   */
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
     );
-
-    // Padded after encryption, not before: the ciphertext itself grows and
-    // shrinks with ratchet state, so only padding the finished envelope makes
-    // every envelope the same size.
-    await this.transport.submit(bucketId, pad(sealed), this.powDifficulty);
+    return result;
   }
 
   /**
