@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+*.tsbuildinfo
+
+# android
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+
+# emulator / local
+*.apk
+*.aab

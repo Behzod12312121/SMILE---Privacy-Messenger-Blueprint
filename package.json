@@ -1,0 +1,33 @@
+{
+  "name": "millygram",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "relay": "node --enable-source-maps packages/server/dist/index.js",
+    "demo": "npm run build && node --enable-source-maps packages/demo/dist/index.js",
+    "test": "npm run build && node --test packages/demo/dist/security.test.js",
+    "audit": "npm audit --audit-level=moderate",
+    "oblivious-relay": "node --enable-source-maps packages/server/dist/oblivious-relay.js",
+    "vectors": "npm run build && node packages/demo/dist/vectors.js"
+  },
+  "dependencies": {
+    "@signalapp/libsignal-client": "0.101.2",
+    "@types/better-sqlite3": "7.6.12",
+    "@types/ws": "8.5.13",
+    "better-sqlite3": "13.0.3",
+    "fastify": "5.12.1",
+    "ws": "8.21.3",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "typescript": "5.9.2"
+  }
+}

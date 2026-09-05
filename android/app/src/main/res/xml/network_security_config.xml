@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is off everywhere, and user-installed certificate authorities are
+  not trusted.
+
+  That second point is the one that matters here. Android trusts the user CA
+  store by default, which means any certificate an employer, a device vendor or
+  a state operator can persuade onto the device will terminate the app's TLS
+  and read everything the transport carries. Message bodies survive that — they
+  are end-to-end encrypted — but the metadata channel does not: who is online,
+  which bucket they poll, which usernames they look up.
+
+  Only the system CA store is trusted. Debug builds additionally trust the
+  user store so that a developer can run a proxy; that override is scoped to
+  the debug overlay and never ships.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

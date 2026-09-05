@@ -1,0 +1,206 @@
+package uz.millygram.app.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import uz.millygram.app.theme.MillyType
+import uz.millygram.app.theme.Radius
+import uz.millygram.app.theme.Space
+import uz.millygram.app.theme.theme
+
+/**
+ * Settings.
+ *
+ * Two rows here are doing something unusual on purpose. "Oxirgi faollik" is
+ * shown greyed with a fixed value rather than as a toggle, because presence is
+ * not collected at all and a switch would imply it could be. And the footer
+ * states the build hash, because a reproducible build is only meaningful if a
+ * user can see which build they are running.
+ */
+@Composable
+fun SettingsScreen(
+    account: Account,
+    onBack: () -> Unit,
+    onSafetyNumber: () -> Unit,
+    onDevices: () -> Unit,
+    onToggleReadReceipts: (Boolean) -> Unit,
+    onToggleScreenLock: (Boolean) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(theme.surface)
+            .statusBarsPadding()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp).padding(top = Space.xs),
+        ) {
+            Box(
+                Modifier.size(Space.minTouchTarget).clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.ArrowBack,
+                    "Orqaga",
+                    tint = theme.accent,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        Text(
+            "Sozlamalar",
+            style = MillyType.LargeTitle,
+            color = theme.textPrimary,
+            modifier = Modifier.padding(horizontal = Space.gutter).padding(top = Space.xs, bottom = 14.dp),
+        )
+
+        ProfileCard(account)
+
+        Spacer(Modifier.padding(top = Space.xl))
+        SectionHeader("Xavfsizlik")
+        Card {
+            SettingsRow(
+                label = "Xavfsizlik raqami",
+                value = account.safetyNumber.take(9),
+                valueMono = true,
+                leading = { KeyGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onSafetyNumber,
+            )
+            RowSeparator()
+            SettingsRow(
+                label = "Kalit shaffofligi",
+                value = if (account.keyTransparencyVerified) "Tasdiqlangan" else "Tekshirilmagan",
+                valueColor = if (account.keyTransparencyVerified) theme.verified else theme.textTertiary,
+                leading = { ShieldGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+            )
+            RowSeparator()
+            SettingsRow(
+                label = "Faol qurilmalar",
+                value = "${account.deviceCount} ta",
+                leading = { DeviceGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onDevices,
+            )
+        }
+
+        Spacer(Modifier.padding(top = Space.xl))
+        SectionHeader("Maxfiylik")
+        Card {
+            SettingsRow(
+                label = "Oʻqilganlik belgisi",
+                leading = { DeliveryTick(theme.textSecondary, size = 20.dp) },
+                trailing = { MillyToggle(account.readReceipts, onToggleReadReceipts) },
+            )
+            RowSeparator()
+            // Not a toggle. Presence is never collected, so offering a switch
+            // would imply the app could show it if you asked.
+            SettingsRow(
+                label = "Oxirgi faollik",
+                value = "Hech qachon",
+                enabled = false,
+                leading = { EyeOffGlyph(theme.textDisabled) },
+            )
+            RowSeparator()
+            SettingsRow(
+                label = "Ekran qulfi",
+                leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
+                trailing = { MillyToggle(account.screenLock, onToggleScreenLock) },
+            )
+        }
+
+        Spacer(Modifier.padding(top = Space.xl))
+        SectionHeader("Koʻrinish")
+        Card {
+            SettingsRow(
+                label = "Mavzu",
+                value = account.theme,
+                leading = { Icon(Icons.Rounded.DarkMode, null, tint = theme.textSecondary, modifier = Modifier.size(20.dp)) },
+                trailing = { Chevron() },
+            )
+            RowSeparator()
+            SettingsRow(
+                label = "Til",
+                value = account.language,
+                leading = { Icon(Icons.Rounded.Language, null, tint = theme.textSecondary, modifier = Modifier.size(20.dp)) },
+                trailing = { Chevron() },
+            )
+        }
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.xxl),
+        ) {
+            Text("MillyGram 1.0 · Ochiq kodli", style = MillyType.Timestamp, color = theme.textTertiary)
+            Text(
+                "Takrorlanuvchi qurilish · ${account.buildHash}",
+                style = MillyType.Timestamp,
+                color = theme.textDisabled,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileCard(account: Account) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = Space.lg)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(Radius.card))
+                .background(theme.surfaceRaised)
+                .padding(Space.lg),
+        ) {
+            Avatar(account.username, account.displayName, 58.dp)
+            Spacer(Modifier.width(15.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(account.displayName, style = MillyType.Title, color = theme.textPrimary)
+                Text("@${account.username}", style = MillyType.Meta, color = theme.textSecondary)
+                // Stated plainly, because not having one is the point.
+                Text("Telefon raqami ulanmagan", style = MillyType.Timestamp, color = theme.textTertiary)
+            }
+            Chevron()
+        }
+    }
+}
+
+@Composable
+private fun Chevron() {
+    Icon(
+        Icons.Rounded.ChevronRight,
+        null,
+        tint = theme.textDisabled,
+        modifier = Modifier.size(18.dp),
+    )
+}

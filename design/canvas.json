@@ -1,0 +1,43 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Suhbatlar · Light", "x": 0, "y": 0, "w": 390, "h": 844 },
+    { "file": "Conversation.dc.html", "title": "Suhbat · Light", "x": 470, "y": 0, "w": 390, "h": 844 },
+    { "file": "NewChat.dc.html", "title": "Yangi suhbat · Light", "x": 940, "y": 0, "w": 390, "h": 844 },
+    { "file": "Settings.dc.html", "title": "Sozlamalar · Light", "x": 1410, "y": 0, "w": 390, "h": 844 },
+    { "file": "MainDark.dc.html", "title": "Suhbatlar · Dark", "x": 0, "y": 964, "w": 390, "h": 844 },
+    { "file": "ConversationDark.dc.html", "title": "Suhbat · Dark", "x": 470, "y": 964, "w": 390, "h": 844 },
+    { "file": "NewChatDark.dc.html", "title": "Yangi suhbat · Dark", "x": 940, "y": 964, "w": 390, "h": 844 },
+    { "file": "SettingsDark.dc.html", "title": "Sozlamalar · Dark", "x": 1410, "y": 964, "w": 390, "h": 844 }
+  ],
+  "annotations": [
+    {
+      "id": "note-light",
+      "x": -300,
+      "y": 0,
+      "w": 230,
+      "text": "LIGHT\n\nAccent #0F7A8F — Samarkand tilework teal. Deliberately not Telegram blue.\n\nUsed only for: unread badge, outgoing bubble, send button, active toggle. Nothing else."
+    },
+    {
+      "id": "note-type",
+      "x": -300,
+      "y": 260,
+      "w": 230,
+      "text": "TYPOGRAPHY\n\nGolos Text — Latin + Cyrillic drawn as one family.\n\nBoth Uzbek marks are correct here:\nU+02BB in oʻ / gʻ (Toʻrayev, Gʻayrat)\nU+02BC in aʼzo (Aʼzamova, maʼlumot)\n\nMost apps collapse both to a straight quote."
+    },
+    {
+      "id": "note-dark",
+      "x": -300,
+      "y": 964,
+      "w": 230,
+      "text": "DARK\n\nTrue #000000 for OLED — real battery saving, and bubbles float instead of sitting on grey.\n\nAccent lifts to #45BBD4 to keep contrast; outgoing bubble drops to a deep #0E5361 so it never glares at night."
+    },
+    {
+      "id": "note-compose",
+      "x": 470,
+      "y": -150,
+      "w": 390,
+      "text": "The compose bar is the whole product argument: input + send. No paperclip, no mic, no sticker button. Nothing that opens a media parser."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}
