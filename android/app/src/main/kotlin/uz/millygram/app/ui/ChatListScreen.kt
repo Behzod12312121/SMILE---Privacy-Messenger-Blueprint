@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,7 @@ fun ChatListScreen(
     onOpenConversation: (Conversation) -> Unit,
     onNewChat: () -> Unit,
     onSettings: () -> Unit,
+    connection: ConnectionState = ConnectionState.Online,
 ) {
     Column(
         Modifier
@@ -80,11 +82,19 @@ fun ChatListScreen(
 
         SearchField()
 
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(conversations, key = { it.aci }) { conversation ->
-                ConversationRow(conversation) { onOpenConversation(conversation) }
+        // An empty list and a dead socket look identical, so the state that
+        // means "you may be missing messages" has to say so.
+        if (connection != ConnectionState.Online) ConnectionNotice(connection)
+
+        if (conversations.isEmpty()) {
+            EmptyChats(onNewChat)
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(conversations, key = { it.aci }) { conversation ->
+                    ConversationRow(conversation) { onOpenConversation(conversation) }
+                }
+                item { Spacer(Modifier.height(Space.xl)) }
             }
-            item { Spacer(Modifier.height(Space.xl)) }
         }
     }
 }
@@ -175,6 +185,62 @@ private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
                 Spacer(Modifier.width(Space.sm))
                 UnreadBadge(conversation.unread)
             }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionNotice(connection: ConnectionState) {
+    val connecting = connection == ConnectionState.Connecting
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (connecting) theme.noticeSurface else theme.dangerSurface)
+            .padding(horizontal = Space.gutter, vertical = 9.dp),
+    ) {
+        Text(
+            if (connecting) "Ulanmoqda…" else "Ulanish yoʻq. Yangi xabarlar kelmayapti.",
+            style = MillyType.Timestamp,
+            color = if (connecting) theme.noticeStrong else theme.danger,
+        )
+    }
+}
+
+/**
+ * The first thing a new account sees. It says what to do next rather than
+ * leaving a blank page that reads as a broken screen.
+ */
+@Composable
+private fun EmptyChats(onNewChat: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = Space.xxl),
+    ) {
+        Spacer(Modifier.height(96.dp))
+        Text(
+            "Hali suhbat yoʻq",
+            style = MillyType.Title,
+            color = theme.textPrimary,
+        )
+        Spacer(Modifier.height(Space.sm))
+        Text(
+            "Do‘stingizning foydalanuvchi nomini kiriting — telefon raqami kerak emas.",
+            style = MillyType.Notice,
+            color = theme.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(Space.xl))
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(theme.accent)
+                .clickable(onClick = onNewChat)
+                .padding(horizontal = Space.xl, vertical = 12.dp),
+        ) {
+            Text("Suhbat boshlash", style = MillyType.Label, color = theme.onAccent)
         }
     }
 }

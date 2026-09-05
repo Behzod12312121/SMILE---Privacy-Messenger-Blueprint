@@ -59,6 +59,8 @@ fun NewChatScreen(
     onCancel: () -> Unit,
     onSelect: (Contact) -> Unit,
     onNewGroup: () -> Unit,
+    /** Starting a conversation with a handle that is not yet a contact. */
+    onStartWithUsername: (String) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
 
@@ -121,6 +123,23 @@ fun NewChatScreen(
             }
             Spacer(Modifier.width(15.dp))
             Text("Yangi guruh", style = MillyType.Label, color = theme.accent)
+        }
+
+        if (query.length >= 3 && recents.none { it.username == query }) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onStartWithUsername(query) }
+                    .padding(horizontal = Space.gutter, vertical = 10.dp),
+            ) {
+                Avatar(query, query, 46.dp)
+                Spacer(Modifier.width(14.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("@" + query, style = MillyType.Name, color = theme.textPrimary)
+                    Text("Suhbat boshlash", style = MillyType.Meta, color = theme.accent)
+                }
+            }
         }
 
         SectionHeader("Soʻnggi")

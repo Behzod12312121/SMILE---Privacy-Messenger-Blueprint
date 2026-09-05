@@ -70,6 +70,8 @@ fun ConversationScreen(
     onBack: () -> Unit,
     onOpenProfile: () -> Unit,
     onSend: (String) -> Unit,
+    onRetry: (Long) -> Unit = {},
+    identityChanged: Boolean = false,
 ) {
     Column(
         Modifier
@@ -79,6 +81,12 @@ fun ConversationScreen(
     ) {
         ConversationHeader(peerAci, peerName, onBack, onOpenProfile)
 
+        // Shown when a message arrived from this contact signed by an identity
+        // key we had not pinned. Everything below it in the thread predates a
+        // key we cannot vouch for, so the warning sits above the timeline
+        // rather than inside it, and does not go away on its own.
+        if (identityChanged) IdentityChangedBanner(onOpenProfile)
+
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -86,21 +94,24 @@ fun ConversationScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(Space.sm),
         ) {
-            items(timeline)
+            items(timeline, onRetry)
         }
 
         Composer(onSend)
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.items(timeline: List<TimelineItem>) {
+private fun androidx.compose.foundation.lazy.LazyListScope.items(
+    timeline: List<TimelineItem>,
+    onRetry: (Long) -> Unit,
+) {
     timeline.forEachIndexed { index, item ->
         when (item) {
             is TimelineItem.EncryptionNotice -> item(key = "notice-$index") { EncryptionNotice() }
             is TimelineItem.DayDivider -> item(key = "day-$index") {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Pill(item.label) }
             }
-            is TimelineItem.Bubble -> item(key = "msg-${item.message.id}") { MessageBubble(item.message) }
+            is TimelineItem.Bubble -> item(key = "msg-${item.message.id}") { MessageBubble(item.message, onRetry) }
         }
     }
 }
@@ -186,7 +197,7 @@ private fun EncryptionNotice() {
 }
 
 @Composable
-private fun MessageBubble(message: Message) {
+private fun MessageBubble(message: Message, onRetry: (Long) -> Unit = {}) {
     val outgoing = message.outgoing
     val shape = if (outgoing) {
         RoundedCornerShape(Radius.bubble, Radius.bubble, Radius.bubbleAnchor, Radius.bubble)
@@ -197,8 +208,17 @@ private fun MessageBubble(message: Message) {
     val content = if (outgoing) theme.onBubbleOutgoing else theme.onBubbleIncoming
     val meta = content.copy(alpha = if (outgoing) 0.70f else 0.55f)
 
+    val retryable = message.delivery == DeliveryState.Failed
+
     Box(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .then(
+                // Tapping a failed message resends it. The alternative — a
+                // toast that has already gone by the time the user looks —
+                // loses the text, which is the one thing that must not happen.
+                if (retryable) Modifier.clickable { onRetry(message.id) } else Modifier,
+            ),
         contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
         Column(
@@ -246,9 +266,20 @@ private fun MessageBubble(message: Message) {
                 modifier = Modifier.align(Alignment.End).padding(top = 3.dp),
             ) {
                 Text(message.timestamp, style = MillyType.Timestamp, color = meta)
-                if (outgoing) {
-                    Spacer(Modifier.width(4.dp))
-                    DeliveryTick(content.copy(alpha = 0.85f), double = message.delivered)
+                when (message.delivery) {
+                    null -> Unit
+                    DeliveryState.Sending -> {
+                        Spacer(Modifier.width(4.dp))
+                        DeliveryTick(content.copy(alpha = 0.35f))
+                    }
+                    DeliveryState.Sent -> {
+                        Spacer(Modifier.width(4.dp))
+                        DeliveryTick(content.copy(alpha = 0.85f))
+                    }
+                    DeliveryState.Failed -> {
+                        Spacer(Modifier.width(4.dp))
+                        FailedMark(theme.danger)
+                    }
                 }
             }
         }
@@ -337,5 +368,30 @@ private fun Composer(onSend: (String) -> Unit) {
                 )
             }
         }
+    }
+}
+
+/**
+ * A safety-number change is the one event that can mean the relay put itself
+ * in the middle of this conversation. It is also what an ordinary reinstall
+ * looks like, so the wording says what happened and what to do rather than
+ * accusing anyone — and it stays until the user has compared the number.
+ */
+@Composable
+private fun IdentityChangedBanner(onOpenProfile: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(theme.dangerSurface)
+            .clickable(onClick = onOpenProfile)
+            .padding(horizontal = Space.lg, vertical = 12.dp),
+    ) {
+        Text(
+            "Xavfsizlik raqami oʻzgardi. Yozishishdan oldin uni tekshiring.",
+            style = MillyType.Notice,
+            color = theme.danger,
+            modifier = Modifier.weight(1f),
+        )
     }
 }

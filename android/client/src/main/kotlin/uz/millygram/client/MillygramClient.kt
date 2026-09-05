@@ -7,6 +7,7 @@ import java.util.concurrent.Executors
 import java.util.UUID
 import okhttp3.OkHttpClient
 import org.json.JSONObject
+import org.signal.libsignal.metadata.ProtocolUntrustedIdentityException
 import org.signal.libsignal.metadata.SealedSessionCipher
 import org.signal.libsignal.metadata.certificate.CertificateValidator
 import org.signal.libsignal.metadata.certificate.SenderCertificate
@@ -14,6 +15,7 @@ import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SignalProtocolAddress
+import org.signal.libsignal.protocol.UntrustedIdentityException
 import org.signal.libsignal.protocol.ecc.ECPublicKey
 import org.signal.libsignal.protocol.fingerprint.NumericFingerprintGenerator
 import org.signal.libsignal.protocol.kem.KEMPublicKey
@@ -240,6 +242,33 @@ class MillygramClient private constructor(
     )
 
     /**
+     * Called when an envelope arrives from a contact whose pinned identity key
+     * no longer matches. Set it before [connect]; it is invoked on the
+     * delivery thread, so implementations must not block.
+     *
+     * This is the client's only channel for reporting key substitution, and a
+     * caller that leaves it unset is choosing not to be told.
+     */
+    @Volatile
+    var onIdentityMismatch: ((senderAci: String) -> Unit)? = null
+
+    /**
+     * Sealed sender wraps protocol exceptions, so matching on the outermost
+     * type alone would miss the wrapped case and silently lose the alarm.
+     */
+    private fun untrustedSender(failure: Throwable): String? {
+        var cause: Throwable? = failure
+        while (cause != null) {
+            when (cause) {
+                is ProtocolUntrustedIdentityException -> return cause.sender
+                is UntrustedIdentityException -> return cause.name
+            }
+            cause = cause.cause
+        }
+        return null
+    }
+
+    /**
      * Bucket members receive every envelope sent to the bucket. Anything not
      * addressed to us fails to open and is dropped without a word — that
      * silence is what stops the relay from learning who a message was for.
@@ -255,7 +284,19 @@ class MillygramClient private constructor(
         val validator = CertificateValidator(trustRoot)
         val result = try {
             cipher.decrypt(validator, unpadded, System.currentTimeMillis())
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            // Almost every failure here is an envelope addressed to another
+            // member of the bucket, and that silence is load-bearing: it is
+            // what stops the relay learning who a message was for.
+            //
+            // Exactly one failure means something else. If the envelope opened
+            // far enough to name a sender whose identity key we had already
+            // pinned, and the key does not match, that is what a relay
+            // substituting keys looks like from inside the client. Dropping it
+            // into the same silence would make pinning pointless — the attack
+            // would be indistinguishable from ordinary bucket noise, and the
+            // message would simply vanish. So this one is reported.
+            untrustedSender(failure)?.let { onIdentityMismatch?.invoke(it) }
             return null
         }
 
@@ -307,7 +348,10 @@ class MillygramClient private constructor(
      * Opens the live delivery socket and drains anything missed while offline.
      * The returned handle closes the socket; the client itself stays usable.
      */
-    fun connect(onMessage: (IncomingMessage) -> Unit): Closeable {
+    fun connect(
+        onMessage: (IncomingMessage) -> Unit,
+        onDisconnected: (() -> Unit)? = null,
+    ): Closeable {
         val subscription = transport.connect(object : Transport.EnvelopeListener {
             override fun onEnvelope(envelope: Transport.Envelope) {
                 submitWork { consume(envelope, onMessage) }
@@ -315,6 +359,19 @@ class MillygramClient private constructor(
 
             override fun onCaughtUp() {
                 submitWork { runCatching { replenishPreKeys() } }
+            }
+
+            // The socket does not come back on its own, and the transport
+            // already notices a silent drop through its ping interval. Both
+            // ends are forwarded so the owner can reconnect; without this the
+            // client stays offline and says nothing after the first blip,
+            // which on a mobile network is a matter of minutes.
+            override fun onClosed(code: Int, reason: String) {
+                onDisconnected?.invoke()
+            }
+
+            override fun onFailure(cause: Throwable) {
+                onDisconnected?.invoke()
             }
         })
 

@@ -25,7 +25,6 @@ fun DeliveryTick(
     color: Color,
     modifier: Modifier = Modifier,
     size: Dp = 15.dp,
-    double: Boolean = true,
 ) {
     Canvas(modifier.size(size)) {
         val w = this.size.width
@@ -41,12 +40,22 @@ fun DeliveryTick(
             drawPath(path, color, style = stroke)
         }
 
-        if (double) {
-            tick(0f)
-            tick(0.30f)
-        } else {
-            tick(0.15f)
-        }
+        tick(0.15f)
+    }
+}
+
+/**
+ * A cross, for a message the relay never accepted.
+ */
+@Composable
+fun FailedMark(color: Color, modifier: Modifier = Modifier, size: Dp = 15.dp) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = Stroke(width = w * 0.14f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        val inset = w * 0.28f
+        drawLine(color, Offset(inset, inset), Offset(w - inset, h - inset), stroke.width, StrokeCap.Round)
+        drawLine(color, Offset(w - inset, inset), Offset(inset, h - inset), stroke.width, StrokeCap.Round)
     }
 }
 

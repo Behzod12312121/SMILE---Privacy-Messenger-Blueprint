@@ -45,19 +45,24 @@ class EndToEndTest {
     private fun freshUsername(label: String): String =
         (label + UUID.randomUUID().toString().replace("-", "")).take(24).lowercase()
 
+    private val vaults = mutableMapOf<String, Pair<String, String>>()
+
     private fun register(label: String): MillygramClient {
+        val database = freshDatabase(label)
+        val passphrase = "instrumented test passphrase for $label"
         val client = MillygramClient.register(
             MillygramRegisterOptions(
                 username = freshUsername(label),
                 base = MillygramOptions(
                     context = context,
-                    databaseName = freshDatabase(label),
-                    passphrase = "instrumented test passphrase for $label",
+                    databaseName = database,
+                    passphrase = passphrase,
                     serverUrl = gatewayUrl,
                 ),
             ),
         )
         clients += client
+        vaults[client.aci] = database to passphrase
         return client
     }
 
@@ -104,6 +109,45 @@ class EndToEndTest {
             alisher.aci,
             received[0].senderAci,
         )
+    }
+
+    @Test
+    fun aSubstitutedIdentityKeyIsReportedRatherThanSilentlyDropped() {
+        val alisher = register("swapa")
+        val nodira = register("swapb")
+
+        // First exchange pins Alisher's identity in Nodira's vault.
+        alisher.send(nodira.username, "birinchi")
+        val firstPass = mutableListOf<MillygramClient.IncomingMessage>()
+        nodira.catchUp { firstPass += it }
+        assertEquals("the first message must arrive normally", 1, firstPass.size)
+
+        // Overwrite the pin with somebody else's key. This is what Nodira's
+        // device would see if the relay had answered a prekey request with an
+        // identity of its own choosing: the ACI is unchanged, the key is not.
+        val (database, passphrase) = vaults.getValue(nodira.aci)
+        val impostor = org.signal.libsignal.protocol.IdentityKeyPair.generate()
+        LocalStore.open(context, database, passphrase).use { vault ->
+            vault.writeIdentity(
+                "${alisher.aci}.${uz.millygram.protocol.Protocol.DEVICE_ID_PRIMARY}",
+                impostor.publicKey.serialize(),
+            )
+        }
+
+        val reported = mutableListOf<String>()
+        nodira.onIdentityMismatch = { reported += it }
+
+        alisher.send(nodira.aci, "ikkinchi")
+        val secondPass = mutableListOf<MillygramClient.IncomingMessage>()
+        nodira.catchUp { secondPass += it }
+
+        // The message must not be delivered — the key did not check out.
+        assertTrue("a message under an unpinned key must not be delivered", secondPass.isEmpty())
+        // And it must not be swallowed either. Silence here is exactly what an
+        // envelope for another bucket member produces, so a relay substituting
+        // keys would be indistinguishable from ordinary traffic.
+        assertEquals("the mismatch must be reported exactly once", 1, reported.size)
+        assertEquals("the report must name the sender", alisher.aci, reported[0])
     }
 
     @Test

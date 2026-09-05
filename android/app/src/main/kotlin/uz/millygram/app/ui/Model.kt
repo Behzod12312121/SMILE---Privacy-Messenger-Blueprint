@@ -20,13 +20,27 @@ data class Conversation(
     val previewPrefix: String? = null,
 )
 
+/**
+ * The only states a sender can honestly be shown.
+ *
+ * There is no delivery receipt and no read receipt anywhere in the protocol,
+ * so there is no state here that claims either. [Sent] means the relay
+ * accepted the envelope; whether it was fetched, decrypted or read is
+ * unknowable from this device, and a second tick would be an invention.
+ */
+enum class DeliveryState { Sending, Sent, Failed }
+
+/** Whether the delivery socket is up. Shown so silence is never ambiguous. */
+enum class ConnectionState { Online, Connecting, Offline }
+
 @Immutable
 data class Message(
     val id: Long,
     val body: String,
     val timestamp: String,
     val outgoing: Boolean,
-    val delivered: Boolean = true,
+    /** Null for incoming messages, where it has no meaning. */
+    val delivery: DeliveryState? = null,
     val replyTo: ReplyContext? = null,
 )
 
@@ -50,7 +64,6 @@ data class Account(
     val safetyNumber: String,
     val deviceCount: Int,
     val keyTransparencyVerified: Boolean,
-    val readReceipts: Boolean,
     val screenLock: Boolean,
     val language: String,
     val theme: String,

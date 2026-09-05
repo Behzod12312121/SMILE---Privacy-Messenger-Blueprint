@@ -3,9 +3,13 @@ package uz.millygram.app.data
 import android.content.Context
 import java.io.Closeable
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,26 +56,83 @@ class MillygramSession private constructor(
     enum class Status { Offline, Connecting, Online }
 
     private var subscription: Closeable? = null
+    private var reconnectJob: Job? = null
+    private var dropped = CompletableDeferred<Unit>()
+
+    /** Set by [close] so the retry loop does not fight a deliberate shutdown. */
+    @Volatile
+    private var closed = false
 
     init {
         _conversations.value = loadContacts()
     }
 
+    /**
+     * Opens the delivery socket and keeps it open.
+     *
+     * The retry loop is the point. A socket that drops and is never rebuilt
+     * leaves the app looking idle while messages pile up on the relay, and the
+     * user has no way to tell that from nobody having written. Backoff is
+     * capped low enough that recovery from an ordinary mobile-network gap is
+     * measured in seconds.
+     */
     fun connect() {
-        scope.launch {
-            _status.value = Status.Connecting
-            runCatching {
-                subscription = client.connect { incoming ->
-                    record(
-                        peerAci = incoming.senderAci,
-                        body = incoming.body,
-                        sentAt = incoming.sentAt,
-                        outgoing = false,
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            var backoffMs = MIN_BACKOFF_MS
+            var failing = false
+            while (isActive && !closed) {
+                // "Connecting" is shown only while the first attempt of an
+                // outage is in flight. Once an attempt has failed, the state
+                // stays "offline" through every retry: an attempt that is
+                // always in progress would leave the banner permanently
+                // hopeful, which is the opposite of what the user needs to
+                // know — that nothing is arriving right now.
+                if (!failing) _status.value = Status.Connecting
+
+                val opened = runCatching {
+                    client.onIdentityMismatch = { senderAci ->
+                        _identityWarnings.update { it + senderAci }
+                    }
+                    subscription = client.connect(
+                        onMessage = { incoming ->
+                            record(
+                                peerAci = incoming.senderAci,
+                                body = incoming.body,
+                                sentAt = incoming.sentAt,
+                                outgoing = false,
+                            )
+                        },
+                        onDisconnected = { dropped.complete(Unit) },
                     )
+                }.isSuccess
+
+                if (!opened) {
+                    failing = true
+                    _status.value = Status.Offline
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
+                    continue
                 }
+
+                failing = false
                 _status.value = Status.Online
-            }.onFailure { _status.value = Status.Offline }
+                backoffMs = MIN_BACKOFF_MS
+
+                // Park until the socket reports it is gone, then rebuild it.
+                dropped.await()
+                dropped = CompletableDeferred()
+                subscription?.runCatching { close() }
+                subscription = null
+                if (closed) break
+                _status.value = Status.Offline
+            }
         }
+    }
+
+    /** Clears the warning once the user has looked at the safety number. */
+    fun acknowledgeIdentityWarning(peerAci: String) {
+        _identityWarnings.update { it - peerAci }
     }
 
     /**
@@ -84,13 +145,61 @@ class MillygramSession private constructor(
         val target = if (recipient.contains('-')) {
             recipient
         } else {
+            // A failure here means the name does not exist, and there is no
+            // conversation to attach it to; it goes back to the caller.
             val entry = client.resolveUsername(recipient)
             rememberContact(entry.aci, recipient)
             entry.aci
         }
 
-        client.send(target, body)
-        record(peerAci = target, body = body, sentAt = System.currentTimeMillis(), outgoing = true)
+        // Recorded before the network is touched, so the message is on screen
+        // while it is in flight and stays there if the send fails. A messenger
+        // that erases text it could not deliver is worse than one that says so.
+        val id = record(
+            peerAci = target,
+            body = body,
+            sentAt = System.currentTimeMillis(),
+            outgoing = true,
+            delivery = Delivery.Sending,
+        )
+
+        try {
+            client.send(target, body)
+            markDelivery(target, id, Delivery.Sent)
+        } catch (failure: Throwable) {
+            markDelivery(target, id, Delivery.Failed)
+            throw failure
+        }
+    }
+
+    /** Re-sends a message the relay never accepted. */
+    suspend fun retry(peerAci: String, messageId: Long) = withContext(Dispatchers.IO) {
+        val message = messagesFor(peerAci).firstOrNull { it.id == messageId } ?: return@withContext
+        markDelivery(peerAci, messageId, Delivery.Sending)
+        try {
+            client.send(peerAci, message.body)
+            markDelivery(peerAci, messageId, Delivery.Sent)
+        } catch (failure: Throwable) {
+            markDelivery(peerAci, messageId, Delivery.Failed)
+            throw failure
+        }
+    }
+
+    private fun markDelivery(peerAci: String, messageId: Long, delivery: Delivery) {
+        _conversations.update { current ->
+            current.map { conversation ->
+                if (conversation.aci != peerAci) {
+                    conversation
+                } else {
+                    conversation.copy(
+                        messages = conversation.messages.map {
+                            if (it.id == messageId) it.copy(delivery = delivery) else it
+                        },
+                    )
+                }
+            }
+        }
+        persistContacts()
     }
 
     suspend fun safetyNumber(peerAci: String): String = withContext(Dispatchers.IO) {
@@ -102,14 +211,22 @@ class MillygramSession private constructor(
 
     /* ---- contacts and history ---- */
 
-    private fun record(peerAci: String, body: String, sentAt: Long, outgoing: Boolean) {
+    private fun record(
+        peerAci: String,
+        body: String,
+        sentAt: Long,
+        outgoing: Boolean,
+        delivery: Delivery? = null,
+    ): Long {
+        val id = sentAt * 10 + if (outgoing) 1 else 0
         _conversations.update { current ->
             val existing = current.firstOrNull { it.aci == peerAci }
             val message = MessageState(
-                id = sentAt * 10 + if (outgoing) 1 else 0,
+                id = id,
                 body = body,
                 sentAt = sentAt,
                 outgoing = outgoing,
+                delivery = delivery,
             )
 
             val updated = existing?.copy(messages = existing.messages + message)
@@ -124,6 +241,7 @@ class MillygramSession private constructor(
             }
         }
         persistContacts()
+        return id
     }
 
     private fun contactName(aci: String): String =
@@ -158,6 +276,18 @@ class MillygramSession private constructor(
                                         put("body", message.body)
                                         put("sentAt", message.sentAt)
                                         put("outgoing", message.outgoing)
+                                        // A message still in flight when the
+                                        // process died did not reach the relay,
+                                        // so it reloads as failed rather than
+                                        // as quietly sent.
+                                        put(
+                                            "delivery",
+                                            when (message.delivery) {
+                                                null -> "none"
+                                                Delivery.Sent -> "sent"
+                                                else -> "failed"
+                                            },
+                                        )
                                     },
                                 )
                             }
@@ -187,6 +317,11 @@ class MillygramSession private constructor(
                             body = message.getString("body"),
                             sentAt = message.getLong("sentAt"),
                             outgoing = message.getBoolean("outgoing"),
+                            delivery = when (message.optString("delivery")) {
+                                "sent" -> Delivery.Sent
+                                "failed" -> Delivery.Failed
+                                else -> null
+                            },
                         )
                     },
                 )
@@ -195,13 +330,20 @@ class MillygramSession private constructor(
     }
 
     override fun close() {
-        subscription?.close()
+        closed = true
+        // Wake the retry loop so it observes `closed` and stops, rather than
+        // parking forever on a socket that will never drop again.
+        dropped.complete(Unit)
+        reconnectJob?.cancel()
+        subscription?.runCatching { close() }
         client.close()
         _status.value = Status.Offline
     }
 
     companion object {
         private const val MAX_HISTORY = 500
+        private const val MIN_BACKOFF_MS = 1_000L
+        private const val MAX_BACKOFF_MS = 30_000L
         private const val DATABASE = "millygram.db"
 
         fun exists(context: Context): Boolean =
@@ -255,9 +397,20 @@ data class ConversationState(
     val messages: List<MessageState>,
 )
 
+/**
+ * What the sender can actually observe about an outgoing message.
+ *
+ * There is no delivery receipt and no read receipt in the protocol, so those
+ * states do not exist here. [Sent] means the relay accepted the envelope, and
+ * that is the furthest anything on this device can honestly claim.
+ */
+enum class Delivery { Sending, Sent, Failed }
+
 data class MessageState(
     val id: Long,
     val body: String,
     val sentAt: Long,
     val outgoing: Boolean,
+    /** Null for incoming messages, where it has no meaning. */
+    val delivery: Delivery? = null,
 )

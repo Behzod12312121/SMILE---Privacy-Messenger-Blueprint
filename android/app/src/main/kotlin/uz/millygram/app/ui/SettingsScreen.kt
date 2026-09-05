@@ -48,7 +48,6 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onSafetyNumber: () -> Unit,
     onDevices: () -> Unit,
-    onToggleReadReceipts: (Boolean) -> Unit,
     onToggleScreenLock: (Boolean) -> Unit,
 ) {
     Column(
@@ -116,10 +115,15 @@ fun SettingsScreen(
         Spacer(Modifier.padding(top = Space.xl))
         SectionHeader("Maxfiylik")
         Card {
+            // Not a toggle, for the same reason as the row below it: there is
+            // no read receipt anywhere in the protocol, so a switch here would
+            // control nothing while implying the feature exists and is merely
+            // turned off.
             SettingsRow(
                 label = "Oʻqilganlik belgisi",
-                leading = { DeliveryTick(theme.textSecondary, size = 20.dp) },
-                trailing = { MillyToggle(account.readReceipts, onToggleReadReceipts) },
+                value = "Yoʻq",
+                enabled = false,
+                leading = { DeliveryTick(theme.textDisabled, size = 20.dp) },
             )
             RowSeparator()
             // Not a toggle. Presence is never collected, so offering a switch

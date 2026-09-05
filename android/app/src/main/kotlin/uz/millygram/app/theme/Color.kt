@@ -40,6 +40,9 @@ data class MillyColors(
     val noticeText: Color,
     val noticeStrong: Color,
     val verified: Color,
+    /** Failed sends, and the identity-change warning. Used sparingly. */
+    val danger: Color,
+    val dangerSurface: Color,
     val isDark: Boolean,
 )
 
@@ -64,6 +67,8 @@ val LightColors = MillyColors(
     noticeText = Color(0xFF3F5B62),
     noticeStrong = Color(0xFF26454D),
     verified = Color(0xFF2F8A5E),
+    danger = Color(0xFFB3261E),
+    dangerSurface = Color(0xFFFCEBE9),
     isDark = false,
 )
 
@@ -90,6 +95,10 @@ val DarkColors = MillyColors(
     noticeText = Color(0xFF9BC2CA),
     noticeStrong = Color(0xFFC7E5EB),
     verified = Color(0xFF4FB889),
+    // Muted against black: a saturated red on an OLED ground reads as an
+    // emergency, and this warning needs to be noticed, not panicked over.
+    danger = Color(0xFFFF7A70),
+    dangerSurface = Color(0xFF2A1416),
     isDark = true,
 )
 
