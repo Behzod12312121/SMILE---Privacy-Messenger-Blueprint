@@ -19,21 +19,24 @@ import org.junit.runner.RunWith
  * do: a message leaving an Android device, passing through the real gateway,
  * and arriving at another Android device, decrypted.
  *
- * It runs against a gateway on the developer's machine, reached at the
- * emulator's 10.0.2.2 loopback alias. That is deliberate — a mocked transport
+ * It runs against a gateway on the developer's machine, reached at localhost
+ * through an adb reverse tunnel. That works the same on an emulator and on a
+ * handset, unlike the 10.0.2.2 alias, which only exists on an emulator and
+ * failed every run on real hardware. That is deliberate — a mocked transport
  * would test this file's own assumptions rather than the server's behaviour,
  * and the two libsignal questions this settles (sealed-sender certificates and
  * HPKE across the JNI boundary) can only be answered against real native code.
  *
  * Start the gateway first:
  *     MG_HOST=127.0.0.1 MG_PORT=8443 npm run relay
+ *     adb reverse tcp:8443 tcp:8443
  */
 @RunWith(AndroidJUnit4::class)
 class EndToEndTest {
 
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val gatewayUrl: String =
-        InstrumentationRegistry.getArguments().getString("gatewayUrl") ?: "http://10.0.2.2:8443"
+        InstrumentationRegistry.getArguments().getString("gatewayUrl") ?: "http://localhost:8443"
 
     private val databases = mutableListOf<String>()
     private val clients = mutableListOf<MillygramClient>()
@@ -77,7 +80,8 @@ class EndToEndTest {
         }.getOrDefault(false)
 
         assertTrue(
-            "no gateway at $gatewayUrl — start it with `npm run relay` on the host first",
+            "no gateway at $gatewayUrl — run `npm run relay` on the host and " +
+                "`adb reverse tcp:8443 tcp:8443` for this device first",
             reachable,
         )
     }

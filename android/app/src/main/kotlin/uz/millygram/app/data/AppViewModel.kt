@@ -147,8 +147,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val DEFAULT_SERVER = "http://10.0.2.2:8443"
-        const val DEFAULT_RELAY = "http://10.0.2.2:8444"
+        /** Set per build type; see the app's build.gradle.kts. */
+        val DEFAULT_SERVER: String = uz.millygram.app.BuildConfig.DEFAULT_SERVER
+        val DEFAULT_RELAY: String = uz.millygram.app.BuildConfig.DEFAULT_RELAY
 
         /**
          * The vault key is derived from this, so its length is the real

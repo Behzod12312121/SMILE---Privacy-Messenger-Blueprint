@@ -27,6 +27,23 @@ android {
         buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
     }
 
+    /**
+     * Where a fresh install looks for the gateway and the relay.
+     *
+     * A debug build talks to a gateway on the developer's machine, reached over
+     * `adb reverse tcp:8443 tcp:8443`, which works the same on an emulator and
+     * on a handset — unlike 10.0.2.2, which only means anything on an emulator
+     * and left every physical device unable to connect out of the box.
+     *
+     * A release build has no business defaulting to a development address, and
+     * cleartext is refused there anyway, so it points at the production names.
+     * Override either at build time with -PmgServer= / -PmgRelay=.
+     */
+    fun endpoints(server: String, relay: String) = mapOf(
+        "DEFAULT_SERVER" to (findProperty("mgServer") as String? ?: server),
+        "DEFAULT_RELAY" to (findProperty("mgRelay") as String? ?: relay),
+    )
+
     compileOptions {
         // libsignal 0.101 uses java.time, which needs desugaring below API 34.
         // Without it the AAR metadata check refuses the dependency outright.
@@ -47,7 +64,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            endpoints("http://localhost:8443", "http://localhost:8444")
+                .forEach { (name, value) -> buildConfigField("String", name, "\"$value\"") }
+        }
         release {
+            endpoints("https://gateway.millygram.uz", "https://relay.millygram.uz")
+                .forEach { (name, value) -> buildConfigField("String", name, "\"$value\"") }
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

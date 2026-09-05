@@ -25,7 +25,11 @@ android {
         // The emulator reaches the host loopback at 10.0.2.2. The gateway runs
         // on the developer machine; this is the only way the on-device test can
         // exercise a real server rather than a mock of one.
-        testInstrumentationRunnerArguments["gatewayUrl"] = "http://10.0.2.2:8443"
+        // localhost through an adb reverse tunnel, which behaves the same on an
+        // emulator and on a handset. The 10.0.2.2 alias exists only on
+        // emulators and failed every run on real hardware.
+        testInstrumentationRunnerArguments["gatewayUrl"] =
+            (findProperty("mgTestGateway") as String? ?: "http://localhost:8443")
         consumerProguardFiles("consumer-rules.pro")
     }
 
