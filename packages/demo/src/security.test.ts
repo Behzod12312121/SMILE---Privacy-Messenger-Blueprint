@@ -883,8 +883,8 @@ describe('a malicious gateway cannot read a conversation undetected', () => {
     // reported the message would simply vanish into the same silence as every
     // envelope addressed to another bucket member, and the attack would cost
     // the operator nothing but one undelivered message.
-    const flagged: unknown[] = [];
-    alice.onUntrustedIdentity = (envelope) => flagged.push(envelope);
+    const flagged: string[] = [];
+    alice.onIdentityMismatch = (senderAci) => flagged.push(senderAci);
 
     await bob.send(alice.aci, 'the real Bob, writing back');
 
@@ -895,6 +895,11 @@ describe('a malicious gateway cannot read a conversation undetected', () => {
 
     assert.equal(alicesInbox.length, 0, 'a message under an unpinned identity must not be delivered');
     assert.equal(flagged.length, 1, 'the substitution must be reported, not swallowed as bucket noise');
+    assert.equal(
+      flagged[0],
+      bob.aci,
+      'the report must name the contact, or the caller cannot mark the conversation',
+    );
 
     // The warning has to lead somewhere. Until the old key is unpinned the
     // conversation is dead in both directions, and that is the same state a

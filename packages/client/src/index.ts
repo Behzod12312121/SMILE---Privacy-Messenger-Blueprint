@@ -433,7 +433,8 @@ export class MillygramClient {
       // what a relay substituting keys looks like from here. Swallowing it
       // alongside ordinary bucket noise would hide the one event the safety
       // number exists to catch.
-      if (isUntrustedIdentity(error)) this.onUntrustedIdentity?.(envelope);
+      const mismatched = untrustedSender(error);
+      if (mismatched !== null) this.onIdentityMismatch?.(mismatched);
       return null;
     }
   }
@@ -457,11 +458,14 @@ export class MillygramClient {
   }
 
   /**
-   * Called when an envelope fails to open because the sender's identity key is
-   * not the one pinned for them. The UI should surface this rather than let it
-   * pass as noise.
+   * Called when an envelope arrives from a contact whose pinned identity key no
+   * longer matches, with that contact's account identifier.
+   *
+   * Named and shaped to match the Android client exactly. It previously handed
+   * back the envelope instead, which says an identity changed without saying
+   * whose — leaving the caller unable to mark the conversation it belongs to.
    */
-  onUntrustedIdentity: ((envelope: StoredEnvelope) => void) | undefined;
+  onIdentityMismatch: ((senderAci: string) => void) | undefined;
 
   private get cursor(): number {
     return this.store.getMetaNumber(META_CURSOR) ?? 0;
@@ -565,9 +569,15 @@ function toPreKeyBundle(bundle: PreKeyBundleResponse, identityKey: PublicKey): P
 }
 
 /**
- * libsignal reports an identity mismatch with a typed error code rather than a
- * message string, so this check does not depend on wording that could change.
+ * The sender an identity mismatch names, or null if this was any other failure.
+ *
+ * libsignal reports the mismatch with a typed error code rather than a message
+ * string, so this does not depend on wording that could change, and the error
+ * carries the address it refused.
  */
-function isUntrustedIdentity(error: unknown): boolean {
-  return LibSignalErrorBase.is(error, ErrorCode.UntrustedIdentity);
+function untrustedSender(error: unknown): string | null {
+  if (!LibSignalErrorBase.is(error, ErrorCode.UntrustedIdentity)) return null;
+  // The typed error declares this as the address it refused, which for our
+  // addresses is the account identifier.
+  return error.addr;
 }
