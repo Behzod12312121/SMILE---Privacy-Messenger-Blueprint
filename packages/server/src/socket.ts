@@ -15,6 +15,25 @@ const HEARTBEAT_MS = 30_000;
  */
 const MAX_SOCKETS_PER_ACCOUNT = 8;
 
+/**
+ * How much undelivered traffic may pile up for one socket before it is dropped.
+ *
+ * Writing to a peer that has stopped reading does not fail, it queues, and the
+ * queue is the relay's memory. Every member of a bucket receives every envelope
+ * sent to it, so a client that connects and then never reads is served a copy
+ * of all of that and holds it — and a client can generate the traffic itself.
+ * Dropping the socket is safe because live delivery is not the only path: the
+ * client reconnects and asks for everything since its cursor, so nothing is
+ * lost by cutting a feed nobody is draining.
+ *
+ * Not covered by a test, and the attempt is worth recording: over loopback the
+ * kernel absorbed several megabytes before `bufferedAmount` moved at all, so no
+ * practical amount of traffic made it trigger there. On a real network, where a
+ * stalled handset has far less buffer to hide behind, it does. The threshold is
+ * configurable so an operator can lower it if this proves too slow to bite.
+ */
+const DEFAULT_MAX_BUFFERED_BYTES = 512 * 1024;
+
 interface Connection {
   socket: WebSocket;
   alive: boolean;
@@ -36,6 +55,7 @@ export class SocketHub implements DeliveryHub {
   constructor(
     private readonly store: Store,
     private readonly authenticator: Authenticator,
+    private readonly maxBufferedBytes: number = DEFAULT_MAX_BUFFERED_BYTES,
   ) {
     this.heartbeat = setInterval(() => this.pingAll(), HEARTBEAT_MS);
     this.heartbeat.unref();
@@ -113,7 +133,12 @@ export class SocketHub implements DeliveryHub {
   }
 
   private send(socket: WebSocket, message: ServerToClient): void {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (socket.bufferedAmount > this.maxBufferedBytes) {
+      socket.terminate();
+      return;
+    }
+    socket.send(JSON.stringify(message));
   }
 
   private pingAll(): void {

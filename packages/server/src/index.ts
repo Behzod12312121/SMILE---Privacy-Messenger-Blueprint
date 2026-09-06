@@ -26,7 +26,7 @@ export async function startServer(overrides: Partial<ServerConfig> = {}): Promis
   const store = new Store(config.databasePath);
   const identity = ServerIdentity.load(store);
   const authenticator = new Authenticator(store, identity, config.authTokenTtlMs);
-  const hub = new SocketHub(store, authenticator);
+  const hub = new SocketHub(store, authenticator, config.maxSocketBufferBytes);
   const app = buildApp({ config, store, identity, authenticator, hub });
 
   const sweep = setInterval(() => {

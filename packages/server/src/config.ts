@@ -64,6 +64,12 @@ export interface ServerConfig {
   powDifficulty: number;
   /** Leading zero bits a registration must carry. See the protocol constant. */
   registrationPowDifficulty: number;
+  /**
+   * How much undelivered traffic may queue for one delivery socket before it is
+   * dropped. Writing to a peer that has stopped reading queues in the relay's
+   * memory rather than failing.
+   */
+  maxSocketBufferBytes: number;
 }
 
 export const DEFAULT_RATE_LIMITS: RateLimits = {
@@ -138,6 +144,7 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
       'MG_REGISTRATION_POW_DIFFICULTY',
       REGISTRATION_POW_DIFFICULTY,
     ),
+    maxSocketBufferBytes: intFromEnv('MG_MAX_SOCKET_BUFFER_BYTES', 512 * 1024),
     ...overrides,
   };
 }
