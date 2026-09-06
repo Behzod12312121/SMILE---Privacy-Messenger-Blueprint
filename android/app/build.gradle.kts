@@ -132,6 +132,11 @@ android {
 
 dependencies {
     implementation(project(":client"))
+
+    // The history migration is pure string work and worth testing off-device;
+    // org.json is stubbed on the JVM, so the real implementation is needed.
+    testImplementation(kotlin("test"))
+    testImplementation("org.json:json:20240303")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
