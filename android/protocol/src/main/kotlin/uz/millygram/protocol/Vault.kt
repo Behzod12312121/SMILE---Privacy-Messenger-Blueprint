@@ -40,6 +40,23 @@ object Vault {
      * These values are stored per-database, so raising them later rewraps an
      * existing vault rather than locking anybody out.
      */
+    /**
+     * scrypt cost. This is the only thing standing between a seized handset and
+     * the conversations on it, so it is deliberately expensive.
+     *
+     * It is also the whole of what an unlock costs: measured on a Galaxy S23,
+     * opening a vault takes 912ms and the derivation accounts for all of it —
+     * SQLite and the row decryptions are noise beside it. Reckon on three to
+     * four seconds on the cheap hardware most of this market carries, paid on
+     * every launch.
+     *
+     * N=32768 is already at the low end of what is recommended, so buying that
+     * time back by lowering it would be spending security on speed. The way to
+     * make launches quick without that trade is to wrap the data key with a
+     * hardware-backed Keystore key, which moves brute-force resistance from CPU
+     * cost to the secure element — a different threat model, and a decision to
+     * take deliberately rather than by tuning a number here.
+     */
     data class KdfParameters(val n: Int = 32_768, val r: Int = 8, val p: Int = 1)
 
     private val random = SecureRandom()

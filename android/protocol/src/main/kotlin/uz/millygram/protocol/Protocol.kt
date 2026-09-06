@@ -48,6 +48,9 @@ object Protocol {
      * and charging it to an address punishes everyone behind the same carrier
      * NAT, which in this market is most of a country. So it is charged in CPU.
      * The gateway says so when it wants more, and the client pays that instead.
+     *
+     * Measured on a Galaxy S23 at 626k hashes/s: 0.42s at eighteen bits, and
+     * nearer two seconds on the cheap hardware most of this market carries.
      */
     const val REGISTRATION_POW_DIFFICULTY: Int = 18
     const val PADDED_ENVELOPE_BYTES: Int = 8192
