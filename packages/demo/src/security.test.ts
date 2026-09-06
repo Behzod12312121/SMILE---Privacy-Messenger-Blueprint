@@ -166,6 +166,41 @@ const submit = (body: unknown): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
+describe('malformed input is refused, not crashed on', () => {
+  // "AAAAA" is five base64url characters, which no byte string encodes to.
+  // "!!!!" is the right length and the wrong alphabet. Both reach the decoder
+  // through a field the schema is supposed to have already validated.
+  const nonsense = ['!!!!', 'AAAAA'];
+
+  test('a bad base64 field is a bad request, on every route that takes one', async () => {
+    for (const bad of nonsense) {
+      const submitted = await submit({ bucketId: 0, content: bad, nonce: 1 });
+      assert.equal(submitted.status, 400, `submission with ${bad} must be refused cleanly`);
+
+      const { body } = buildRegistration(unique('badb64').username);
+      const registered = await postJson('/v1/accounts', { ...body, identityKey: bad });
+      assert.equal(registered.status, 400, `registration with ${bad} must be refused cleanly`);
+
+      const authed = await postJson('/v1/accounts/auth', {
+        aci: '00000000-0000-4000-8000-000000000000',
+        deviceId: 1,
+        nonce: bad,
+        signature: 'AA',
+      });
+      assert.equal(authed.status, 400, `auth with ${bad} must be refused cleanly`);
+    }
+  });
+
+  test('a refusal carries no internal detail', async () => {
+    const response = await submit({ bucketId: 0, content: '!!!!', nonce: 1 });
+    const text = await response.text();
+
+    // The decoder's own message named the failure mode and reached the wire as
+    // a 500. Validation failures say invalid_request and nothing else.
+    assert.ok(!/canonical|base64url|stack|at Object/i.test(text), `leaked internals: ${text}`);
+  });
+});
+
 describe('rate limiting is not keyed on the caller address', () => {
   /** One full challenge/response round for an account. */
   const authenticate = async (aci: string, identity: IdentityKeyPair): Promise<number> => {

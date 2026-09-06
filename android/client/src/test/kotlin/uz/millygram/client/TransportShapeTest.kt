@@ -172,6 +172,42 @@ class TransportShapeTest {
     }
 
     @Test
+    fun `a poisoned envelope in a catch-up batch is skipped, not thrown`() {
+        enqueueAuth()
+        // The gateway decides what goes in this list, and a hostile one is
+        // inside the threat model. Three of these four entries are unusable:
+        // content that is not base64 at all, content of an impossible length,
+        // and an entry missing the sequence number entirely.
+        enqueueJson(
+            200,
+            """
+            {"envelopes":[
+              {"seq":1,"content":"!!!!","arrivedAt":1},
+              {"seq":2,"content":"AAAAA","arrivedAt":2},
+              {"content":"${Protocol.b64(ByteArray(8) { 1 })}","arrivedAt":3},
+              {"seq":4,"content":"${Protocol.b64(ByteArray(8) { 9 })}","arrivedAt":4}
+            ]}
+            """.trimIndent(),
+        )
+
+        // Throwing here would fail the whole catch-up and leave the cursor
+        // unmoved, so every later attempt would fetch the same poisoned batch
+        // and nothing would ever be delivered again — silently, because the
+        // caller treats a failed catch-up as nothing to do.
+        val envelopes = transport.since(0)
+
+        assertEquals(1, envelopes.size, "only the usable envelope should survive")
+        assertEquals(4L, envelopes[0].seq)
+    }
+
+    @Test
+    fun `a catch-up response with no envelope list is empty, not fatal`() {
+        enqueueAuth()
+        enqueueJson(200, """{"envelopes":null}""")
+        assertEquals(0, transport.since(0).size)
+    }
+
+    @Test
     fun `an error response becomes a TransportError carrying the server code`() {
         enqueueJson(400, """{"error":"insufficient_proof_of_work","difficulty":16}""")
 

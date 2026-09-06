@@ -183,14 +183,25 @@ class Transport(
 
     fun since(cursor: Long): List<Envelope> {
         val body = json(get("/v1/messages?since=$cursor", auth = true))
-        val array = body.getJSONArray("envelopes")
-        return (0 until array.length()).map { index ->
-            val entry = array.getJSONObject(index)
-            Envelope(
-                seq = entry.getLong("seq"),
-                content = Protocol.unb64(entry.getString("content")),
-                arrivedAt = entry.getLong("arrivedAt"),
-            )
+        val array = body.optJSONArray("envelopes") ?: return emptyList()
+
+        // Each entry is parsed on its own and a bad one is skipped, exactly as
+        // the socket path already does. The gateway chooses what goes in this
+        // list, and a hostile one is inside the threat model: a single envelope
+        // with content that is not base64 would otherwise throw out of here,
+        // fail the whole catch-up, and leave the cursor where it was — so every
+        // later attempt fetches the same poisoned batch. The caller treats that
+        // failure as nothing to do, so the app would sit there saying it is
+        // online and never receive another message.
+        return (0 until array.length()).mapNotNull { index ->
+            runCatching {
+                val entry = array.getJSONObject(index)
+                Envelope(
+                    seq = entry.getLong("seq"),
+                    content = Protocol.unb64(entry.getString("content")),
+                    arrivedAt = entry.getLong("arrivedAt"),
+                )
+            }.getOrNull()
         }
     }
 

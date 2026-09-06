@@ -298,8 +298,19 @@ const b64url = (label: string, maxBytes: number) =>
     .max(Math.ceil(maxBytes / 3) * 4 + 4)
     .refine((v) => /^[A-Za-z0-9_-]+$/.test(v), label + ' must be base64url')
     .refine((v) => {
-      const len = unb64(v).length;
-      return len > 0 && len <= maxBytes;
+      // unb64 reports non-canonical input by throwing, which is right for a
+      // decoder and wrong inside a validator. A thrown error is not a
+      // validation failure: it escapes safeParse entirely and surfaces as a
+      // 500 with the internal message attached. Every route taking one of
+      // these fields — registration, submission, auth — could be made to
+      // return one, unauthenticated, with four characters of nonsense.
+      let length: number;
+      try {
+        length = unb64(v).length;
+      } catch {
+        return false;
+      }
+      return length > 0 && length <= maxBytes;
     }, label + ' has an invalid length');
 
 export const Username = z.string().regex(USERNAME_RE, 'username must be 3-32 chars of [a-z0-9_]');

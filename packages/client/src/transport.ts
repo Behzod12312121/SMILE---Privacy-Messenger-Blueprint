@@ -213,9 +213,23 @@ export class Transport {
   /** Everything the caller's bucket has received since `cursor`. */
   async since(cursor: number): Promise<StoredEnvelope[]> {
     const result = (await this.request('GET', `/v1/messages?since=${cursor}`, { auth: true })) as {
-      envelopes: StoredEnvelope[];
+      envelopes?: unknown;
     };
-    return result.envelopes;
+
+    // The gateway decides what goes in this list and a hostile one is inside
+    // the threat model, so nothing here is assumed to have the shape it claims.
+    // A malformed entry is skipped rather than allowed to throw: failing the
+    // whole catch-up would leave the cursor where it was, so every later
+    // attempt would fetch the same poisoned batch and no message would ever
+    // arrive again.
+    if (!Array.isArray(result.envelopes)) return [];
+    return result.envelopes.filter(
+      (e): e is StoredEnvelope =>
+        typeof e === 'object' &&
+        e !== null &&
+        typeof (e as StoredEnvelope).seq === 'number' &&
+        typeof (e as StoredEnvelope).content === 'string',
+    );
   }
 
   async connect(handlers: {
