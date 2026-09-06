@@ -1,3 +1,4 @@
+import { createCipheriv } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -64,6 +65,20 @@ const registrationVector = {
   oneTimePreKeys: [{ keyId: 1, publicKey: b64(patterned(33, 6)) }],
   timestamp: 1788435744566,
 };
+
+// The vault is per-device and never shared, so nothing forces the two
+// implementations to store it the same way — which is exactly why they drifted
+// without anything noticing. A backup, an export, or a desktop client sharing
+// the format would find out the hard way. This vector makes one seal the other
+// must be able to open.
+const vaultKey = patterned(32, 11);
+const vaultPlaintext = patterned(48, 13);
+const vaultAad = Buffer.from('millygram/v1/meta/aci', 'utf8');
+const vaultNonce = patterned(12, 17);
+const vaultCipher = createCipheriv('aes-256-gcm', vaultKey, vaultNonce, { authTagLength: 16 });
+vaultCipher.setAAD(vaultAad);
+const vaultBody = Buffer.concat([vaultCipher.update(vaultPlaintext), vaultCipher.final()]);
+const vaultSealed = Buffer.concat([vaultNonce, vaultBody, vaultCipher.getAuthTag()]);
 
 const powContent = patterned(PADDED_ENVELOPE_BYTES, 9);
 const powBucket = 7;
@@ -158,6 +173,12 @@ const vectors = {
     contentHex: hex(powContent),
     validNonce: powNonce,
     invalidNonce: powBadNonce,
+  },
+  vault: {
+    keyHex: hex(vaultKey),
+    aad: vaultAad.toString('utf8'),
+    plaintextHex: hex(vaultPlaintext),
+    sealedHex: hex(vaultSealed),
   },
   registrationWork: {
     difficulty: regDifficulty,

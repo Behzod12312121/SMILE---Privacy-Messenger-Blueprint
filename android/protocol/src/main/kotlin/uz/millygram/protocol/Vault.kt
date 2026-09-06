@@ -94,7 +94,15 @@ object Vault {
     /** NFKC to match the Node side, so a passphrase entered on any keyboard hashes the same. */
     private fun normalise(value: String): String = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC)
 
-    /** AES-256-GCM under `key`, committing to `associated`. Layout: 12-byte nonce ‖ 16-byte tag ‖ body. */
+    /**
+     * AES-256-GCM under `key`, committing to `associated`.
+     *
+     * Layout is 12-byte nonce ‖ ciphertext ‖ 16-byte tag — the tag last, where
+     * the Java cipher puts it. The comment here used to describe the tag as
+     * second, which was the Node client's layout and not this one; the two
+     * could not open each other's storage, and nothing noticed because a vault
+     * is per-device and never shared. A conformance vector pins it now.
+     */
     fun seal(key: ByteArray, associated: ByteArray, plaintext: ByteArray): ByteArray {
         require(key.size == KEY_BYTES) { "key must be $KEY_BYTES bytes" }
         val nonce = randomBytes(NONCE_BYTES)

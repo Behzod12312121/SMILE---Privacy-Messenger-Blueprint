@@ -158,6 +158,21 @@ class ProtocolVectorsTest {
     }
 
     @Test
+    fun `a vault sealed by the reference implementation opens here`() {
+        val vector = vectors.getJSONObject("vault")
+        val key = unhex(vector.getString("keyHex"))
+        val aad = vector.getString("aad").toByteArray(Charsets.UTF_8)
+        val sealed = unhex(vector.getString("sealedHex"))
+
+        // The vault is per-device and never shared, so nothing was forcing the
+        // two implementations to agree on how a value is stored — and they did
+        // not. Anything that ever moves one, a backup or an export or a second
+        // client, would have found out the hard way.
+        val opened = Vault.open(key, aad, sealed)
+        assertEquals(vector.getString("plaintextHex"), hex(opened))
+    }
+
+    @Test
     fun `registration work matches the reference implementation`() {
         val vector = vectors.getJSONObject("registrationWork")
         val payload = unhex(vector.getString("payloadHex"))

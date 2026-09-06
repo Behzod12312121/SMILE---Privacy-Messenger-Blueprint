@@ -79,19 +79,30 @@ function aad(table: string, key: string): Buffer {
   return Buffer.from(`millygram/v1/${table}/${key}`, 'utf8');
 }
 
+/**
+ * AES-256-GCM under `dek`, committing to `associated`.
+ *
+ * Layout is nonce ‖ ciphertext ‖ tag, with the tag last. That is where the
+ * Java cipher puts it, and the Android client is where the vaults that matter
+ * live; this side used to put the tag second and neither implementation could
+ * open the other's storage. Nothing forced them to agree, because a vault is
+ * per-device and never shared — which is why it went unnoticed until a
+ * conformance vector asked. A backup, an export, or a second client would have
+ * found it the hard way.
+ */
 function seal(dek: Buffer, associated: Buffer, plaintext: Uint8Array): Buffer {
   const nonce = randomBytes(NONCE_BYTES);
   const cipher = createCipheriv('aes-256-gcm', dek, nonce, { authTagLength: TAG_BYTES });
   cipher.setAAD(associated);
   const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  return Buffer.concat([nonce, cipher.getAuthTag(), body]);
+  return Buffer.concat([nonce, body, cipher.getAuthTag()]);
 }
 
 function open(dek: Buffer, associated: Buffer, blob: Buffer): Bytes {
   if (blob.length < NONCE_BYTES + TAG_BYTES) throw new Error('stored value is truncated');
   const nonce = blob.subarray(0, NONCE_BYTES);
-  const tag = blob.subarray(NONCE_BYTES, NONCE_BYTES + TAG_BYTES);
-  const body = blob.subarray(NONCE_BYTES + TAG_BYTES);
+  const tag = blob.subarray(blob.length - TAG_BYTES);
+  const body = blob.subarray(NONCE_BYTES, blob.length - TAG_BYTES);
 
   const decipher = createDecipheriv('aes-256-gcm', dek, nonce, { authTagLength: TAG_BYTES });
   decipher.setAAD(associated);

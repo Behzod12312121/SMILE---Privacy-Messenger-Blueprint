@@ -181,6 +181,12 @@
     "validNonce": 1977,
     "invalidNonce": 0
   },
+  "vault": {
+    "keyHex": "bbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c",
+    "aad": "millygram/v1/meta/aci",
+    "plaintextHex": "ddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8e",
+    "sealedHex": "21405f7e9dbcdbfa19385776344e10b32fc822cc6ce1790e18cc367b73daf7577d66ccaf7816ccb826a5ae308a0d67b0f3274c49becf703a17cbab1b5aa298abbd0d3e4f750a4362be5ec424"
+  },
   "registrationWork": {
     "difficulty": 12,
     "payloadHex": "557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6",
