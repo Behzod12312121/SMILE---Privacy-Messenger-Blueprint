@@ -133,13 +133,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return runCatching { session.retry(peerAci, messageId) }
     }
 
-    private fun describe(failure: Throwable): String = when {
-        failure.message?.contains("username_taken") == true -> "Bu nom band"
-        failure.message?.contains("slow_down") == true -> "Juda koʻp urinish. Biroz kuting"
-        failure.message?.contains("Failed to connect") == true ||
-            failure.message?.contains("Unable to resolve") == true -> "Serverga ulanib boʻlmadi"
-        else -> failure.message ?: "Nomaʼlum xato"
+    /**
+     * Turns a failure into something the person holding the phone can act on.
+     *
+     * The fallback deliberately does not include the underlying message. The
+     * gateway speaks in codes like `clock_skew`, and the transport in English
+     * exception text; either one landing in the middle of an otherwise Uzbek
+     * screen tells the user nothing and can carry internal detail with it.
+     */
+    private fun describe(failure: Throwable): String {
+        val message = failure.message.orEmpty()
+        return when {
+            "username_taken" in message -> "Bu nom band"
+            "not_found" in message -> "Bunday foydalanuvchi topilmadi"
+            "slow_down" in message -> "Juda koʻp urinish. Biroz kuting"
+            // The device clock, not the server's: registration is refused if
+            // they differ by more than five minutes, and a handset that has
+            // been flat for a while comes back with the wrong time.
+            "clock_skew" in message -> "Qurilma soati notoʻgʻri. Sana va vaqtni tekshiring"
+            "work_required" in message -> "Server band. Biroz kutib, qayta urinib koʻring"
+            "Failed to connect" in message ||
+                "Unable to resolve" in message ||
+                "timeout" in message.lowercase() ||
+                failure is java.io.IOException -> "Serverga ulanib boʻlmadi"
+            else -> "Xatolik yuz berdi. Qayta urinib koʻring"
+        }
     }
+
+    /** Same wording, for failures that surface outside the onboarding screen. */
+    fun explain(failure: Throwable): String = describe(failure)
 
     override fun onCleared() {
         (_state.value as? State.Ready)?.session?.close()

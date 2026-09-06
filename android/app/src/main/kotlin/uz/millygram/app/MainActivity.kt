@@ -144,6 +144,8 @@ private fun SignedIn(
     val status by session.status.collectAsStateWithLifecycle()
 
     var screenLock by remember { mutableStateOf(true) }
+    var startError by remember { mutableStateOf<String?>(null) }
+    var starting by remember { mutableStateOf(false) }
 
     NavHost(
         navController = navController,
@@ -195,9 +197,19 @@ private fun SignedIn(
                 // send has to resolve it before there is a conversation to open.
                 onStartWithUsername = { username ->
                     scope.launch {
-                        model.send(username, "Salom!").onSuccess { navController.popBackStack() }
+                        startError = null
+                        starting = true
+                        model.send(username, "Salom!")
+                            .onSuccess { navController.popBackStack() }
+                            // Silently dropping this left the button doing
+                            // nothing at all for the commonest mistake there
+                            // is: a mistyped handle.
+                            .onFailure { startError = model.explain(it) }
+                        starting = false
                     }
                 },
+                error = startError,
+                busy = starting,
             )
         }
 

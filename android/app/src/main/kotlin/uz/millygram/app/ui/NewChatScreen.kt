@@ -60,6 +60,9 @@ fun NewChatScreen(
     onSelect: (Contact) -> Unit,
     /** Starting a conversation with a handle that is not yet a contact. */
     onStartWithUsername: (String) -> Unit = {},
+    /** Why the last attempt to start one failed, if it did. */
+    error: String? = null,
+    busy: Boolean = false,
 ) {
     var query by remember { mutableStateOf("") }
 
@@ -108,19 +111,38 @@ fun NewChatScreen(
         }
 
 
+        // Resolving a handle is a network call that can fail — most often
+        // because nobody has that name. Saying so is the whole point: the
+        // screen used to do nothing at all, which reads as a broken button.
+        if (error != null) {
+            Text(
+                error,
+                style = MillyType.Notice,
+                color = theme.danger,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.gutter)
+                    .padding(bottom = 14.dp),
+            )
+        }
+
         if (query.length >= 3 && recents.none { it.username == query }) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onStartWithUsername(query) }
+                    .clickable(enabled = !busy) { onStartWithUsername(query) }
                     .padding(horizontal = Space.gutter, vertical = 10.dp),
             ) {
                 Avatar(query, query, 46.dp)
                 Spacer(Modifier.width(14.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("@" + query, style = MillyType.Name, color = theme.textPrimary)
-                    Text("Suhbat boshlash", style = MillyType.Meta, color = theme.accent)
+                    Text(
+                    if (busy) "Tekshirilmoqda…" else "Suhbat boshlash",
+                    style = MillyType.Meta,
+                    color = theme.accent,
+                )
                 }
             }
         }
