@@ -16,8 +16,10 @@ import {
   pad,
   registrationSigningPayload,
   solveProofOfWork,
+  solveRegistrationWork,
   unpad,
   verifyProofOfWork,
+  verifyRegistrationWork,
 } from '@millygram/protocol';
 
 /**
@@ -70,6 +72,15 @@ const powNonce = solveProofOfWork(powBucket, powContent, powDifficulty);
 
 let powBadNonce = 0;
 while (verifyProofOfWork(powBucket, powContent, powBadNonce, powDifficulty)) powBadNonce += 1;
+
+// Registration work is a different domain to submission work, and the two
+// implementations have to agree on both the context string and the preimage
+// shape. A vector is the only thing that proves they do.
+const regPayload = patterned(96, 5);
+const regDifficulty = 12;
+const regNonce = solveRegistrationWork(regPayload, regDifficulty);
+let regBadNonce = 0;
+while (verifyRegistrationWork(regPayload, regBadNonce, regDifficulty)) regBadNonce += 1;
 
 const obliviousContent = patterned(PADDED_ENVELOPE_BYTES, 11);
 const obliviousEncoded = encodeObliviousRequest(4294967295, 123456, obliviousContent);
@@ -147,6 +158,12 @@ const vectors = {
     contentHex: hex(powContent),
     validNonce: powNonce,
     invalidNonce: powBadNonce,
+  },
+  registrationWork: {
+    difficulty: regDifficulty,
+    payloadHex: hex(regPayload),
+    validNonce: regNonce,
+    invalidNonce: regBadNonce,
   },
   obliviousRequest: {
     bucketId: 4294967295,

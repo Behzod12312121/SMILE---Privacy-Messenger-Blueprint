@@ -17,6 +17,8 @@ import {
   DEVICE_ID_PRIMARY,
   MAX_PLAINTEXT_BYTES,
   ONE_TIME_PREKEY_BATCH,
+  REGISTRATION_POW_DIFFICULTY,
+  solveRegistrationWork,
   ONE_TIME_PREKEY_LOW_WATER,
   b64,
   bytes,
@@ -138,7 +140,7 @@ export class MillygramClient {
     const material = await generateInitialKeys(identity, stores);
     store.setMetaNumber(META_NEXT_PREKEY_ID, ONE_TIME_PREKEY_BATCH + 1);
 
-    const unsigned: Omit<RegisterRequest, 'signature'> = {
+    const unsigned: Omit<RegisterRequest, 'signature' | 'workNonce'> = {
       username: options.username,
       deviceId: DEVICE_ID_PRIMARY,
       registrationId,
@@ -148,12 +150,37 @@ export class MillygramClient {
       oneTimePreKeys: material.oneTimePreKeys,
       timestamp: Date.now(),
     };
-    const signature = identity.privateKey.sign(registrationSigningPayload(unsigned));
+    const payload = registrationSigningPayload(unsigned);
+    const signature = identity.privateKey.sign(payload);
 
     const transport = new Transport(options.serverUrl, null, options.obliviousRelayUrl ?? null);
+    // Registration is charged in CPU rather than to an address. Every user on
+    // an Uzbek mobile network shares a handful of public addresses, so an
+    // address-based limit would ration signups for a whole carrier; work costs
+    // the same wherever it is solved. The retry exists so the gateway can raise
+    // the price during a flood without every installed client breaking.
     let registered;
     try {
-      registered = await transport.register({ ...unsigned, signature: b64(signature) });
+      let difficulty = REGISTRATION_POW_DIFFICULTY;
+      for (let attempt = 0; ; attempt += 1) {
+        const workNonce = solveRegistrationWork(payload, difficulty);
+        try {
+          registered = await transport.register({
+            ...unsigned,
+            signature: b64(signature),
+            workNonce,
+          });
+          break;
+        } catch (error) {
+          const harder =
+            error instanceof TransportError &&
+            error.code === 'work_required' &&
+            error.requiredDifficulty !== undefined &&
+            error.requiredDifficulty > difficulty;
+          if (!harder || attempt > 0) throw error;
+          difficulty = (error as TransportError).requiredDifficulty!;
+        }
+      }
     } catch (error) {
       store.close();
       throw error;

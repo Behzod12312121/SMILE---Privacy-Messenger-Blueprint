@@ -158,6 +158,32 @@ class ProtocolVectorsTest {
     }
 
     @Test
+    fun `registration work matches the reference implementation`() {
+        val vector = vectors.getJSONObject("registrationWork")
+        val payload = unhex(vector.getString("payloadHex"))
+        val difficulty = vector.getInt("difficulty")
+
+        assertTrue(
+            Protocol.verifyRegistrationWork(payload, vector.getLong("validNonce"), difficulty),
+            "a nonce the reference implementation solved must verify here",
+        )
+        assertTrue(
+            !Protocol.verifyRegistrationWork(payload, vector.getLong("invalidNonce"), difficulty),
+            "a nonce the reference implementation rejected must be rejected here",
+        )
+
+        val solved = Protocol.solveRegistrationWork(payload, difficulty)
+        assertTrue(Protocol.verifyRegistrationWork(payload, solved, difficulty))
+
+        // Domain separation: the two proofs share a hash and must not share a
+        // preimage, or a cheap submission proof could be spent as a signup.
+        assertTrue(
+            !Protocol.verifyProofOfWork(0, payload, vector.getLong("validNonce"), difficulty),
+            "registration work must not verify as submission work",
+        )
+    }
+
+    @Test
     fun `oblivious request layout matches`() {
         val vector = vectors.getJSONObject("obliviousRequest")
         val content = unhex(vector.getString("contentHex"))

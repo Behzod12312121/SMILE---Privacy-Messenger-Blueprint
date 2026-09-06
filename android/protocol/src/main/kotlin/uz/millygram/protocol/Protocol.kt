@@ -30,10 +30,26 @@ object Protocol {
     const val SIG_REGISTER: String = "millygram/register/v1"
     const val SIG_AUTH: String = "millygram/auth/v1"
     const val POW_CONTEXT: String = "millygram/pow/v1"
+
+    /**
+     * A separate context so a submission proof can never be presented as a
+     * registration proof, or the reverse. Same hash, different domain.
+     */
+    const val REGISTRATION_POW_CONTEXT: String = "millygram/pow-register/v1"
     const val OBLIVIOUS_INFO: String = "millygram/oblivious/v1"
 
     const val DEVICE_ID_PRIMARY: Int = 1
     const val MAX_PLAINTEXT_BYTES: Int = 4096
+
+    /**
+     * Leading zero bits a registration must carry.
+     *
+     * Registration cannot be charged to an identity — there isn't one yet —
+     * and charging it to an address punishes everyone behind the same carrier
+     * NAT, which in this market is most of a country. So it is charged in CPU.
+     * The gateway says so when it wants more, and the client pays that instead.
+     */
+    const val REGISTRATION_POW_DIFFICULTY: Int = 18
     const val PADDED_ENVELOPE_BYTES: Int = 8192
     const val OBLIVIOUS_REQUEST_BYTES: Int = 8 + PADDED_ENVELOPE_BYTES
     const val ONE_TIME_PREKEY_BATCH: Int = 100
@@ -155,6 +171,50 @@ object Protocol {
      * Explicitly big-endian. A native-order view would produce a different
      * protocol on a host with the opposite byte order.
      */
+    private fun registrationPreimage(payload: ByteArray): ByteArray =
+        REGISTRATION_POW_CONTEXT.toByteArray(Charsets.UTF_8) + sha256(payload)
+
+    /** Solves the work a registration has to carry. */
+    fun solveRegistrationWork(payload: ByteArray, difficulty: Int): Long =
+        solveWork(registrationPreimage(payload), difficulty)
+
+    fun verifyRegistrationWork(payload: ByteArray, nonce: Long, difficulty: Int): Boolean =
+        verifyWork(registrationPreimage(payload), nonce, difficulty)
+
+    /**
+     * The search loop for both kinds of work.
+     *
+     * One MessageDigest for the whole run, reused. Asking the provider for a
+     * fresh instance per attempt costs more than the hash does, and at a
+     * million attempts that was the difference between a second and half a
+     * minute on a handset — paid on every signup and, through the submission
+     * proof, on every message sent.
+     */
+    private fun solveWork(preimage: ByteArray, difficulty: Int): Long {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(preimage.size + 4)
+        preimage.copyInto(buffer)
+        // Written into rather than returned, so the search allocates nothing.
+        val out = ByteArray(32)
+
+        var nonce = 0L
+        while (nonce <= 0xffffffffL) {
+            writeUInt32BE(buffer, preimage.size, nonce)
+            digest.update(buffer)
+            digest.digest(out, 0, out.size)
+            if (leadingZeroBits(out) >= difficulty) return nonce
+            nonce += 1
+        }
+        throw IllegalStateException("no proof of work found")
+    }
+
+    private fun verifyWork(preimage: ByteArray, nonce: Long, difficulty: Int): Boolean {
+        val buffer = ByteArray(preimage.size + 4)
+        preimage.copyInto(buffer)
+        writeUInt32BE(buffer, preimage.size, nonce)
+        return leadingZeroBits(sha256(buffer)) >= difficulty
+    }
+
     private fun powPreimage(bucketId: Long, content: ByteArray): ByteArray {
         val bucket = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(bucketId.toInt()).array()
         return POW_CONTEXT.toByteArray(Charsets.UTF_8) + bucket + sha256(content)
@@ -165,27 +225,12 @@ object Protocol {
      * a bucket. It charges CPU instead: cheap once, expensive a million times,
      * and it reveals nothing about who paid.
      */
-    fun solveProofOfWork(bucketId: Long, content: ByteArray, difficulty: Int): Long {
-        val preimage = powPreimage(bucketId, content)
-        val buffer = ByteArray(preimage.size + 4)
-        preimage.copyInto(buffer)
+    fun solveProofOfWork(bucketId: Long, content: ByteArray, difficulty: Int): Long =
+        solveWork(powPreimage(bucketId, content), difficulty)
 
-        var nonce = 0L
-        while (nonce <= 0xffffffffL) {
-            writeUInt32BE(buffer, preimage.size, nonce)
-            if (leadingZeroBits(sha256(buffer)) >= difficulty) return nonce
-            nonce += 1
-        }
-        throw IllegalStateException("no proof of work found")
-    }
+    fun verifyProofOfWork(bucketId: Long, content: ByteArray, nonce: Long, difficulty: Int): Boolean =
+        verifyWork(powPreimage(bucketId, content), nonce, difficulty)
 
-    fun verifyProofOfWork(bucketId: Long, content: ByteArray, nonce: Long, difficulty: Int): Boolean {
-        val preimage = powPreimage(bucketId, content)
-        val buffer = ByteArray(preimage.size + 4)
-        preimage.copyInto(buffer)
-        writeUInt32BE(buffer, preimage.size, nonce)
-        return leadingZeroBits(sha256(buffer)) >= difficulty
-    }
 
     private fun writeUInt32BE(target: ByteArray, offset: Int, value: Long) {
         target[offset] = ((value ushr 24) and 0xff).toByte()

@@ -23,6 +23,12 @@ export class TransportError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /**
+     * Set when the gateway answered `work_required`: the difficulty it will
+     * accept. Lets the server raise the price under load without every client
+     * needing a new build.
+     */
+    readonly requiredDifficulty?: number,
   ) {
     super(`${code} (HTTP ${status})`);
     this.name = 'TransportError';
@@ -80,7 +86,15 @@ export class Transport {
         typeof parsed === 'object' && parsed !== null && 'error' in parsed
           ? String((parsed as { error: unknown }).error)
           : 'request_failed';
-      throw new TransportError(response.status, code);
+      const difficulty =
+        typeof parsed === 'object' && parsed !== null && 'difficulty' in parsed
+          ? Number((parsed as { difficulty: unknown }).difficulty)
+          : undefined;
+      throw new TransportError(
+        response.status,
+        code,
+        Number.isSafeInteger(difficulty) ? difficulty : undefined,
+      );
     }
     return parsed;
   }

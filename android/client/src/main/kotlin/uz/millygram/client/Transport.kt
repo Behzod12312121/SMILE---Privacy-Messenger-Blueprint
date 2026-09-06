@@ -24,8 +24,16 @@ import uz.millygram.protocol.Protocol
  * write an auth token or a URL to disk, and both are exactly the metadata this
  * project exists not to keep.
  */
-class TransportError(val status: Int, val code: String) :
-    IOException("$code (HTTP $status)")
+class TransportError(
+    val status: Int,
+    val code: String,
+    /**
+     * Set when the gateway answered `work_required`: the difficulty it will
+     * accept. Lets the server raise the price under load without every client
+     * needing a new build.
+     */
+    val requiredDifficulty: Int? = null,
+) : IOException("$code (HTTP $status)")
 
 interface Credentials {
     val aci: String
@@ -215,19 +223,20 @@ class Transport(
 
     private fun checkStatus(response: Response) {
         if (response.isSuccessful) return
-        val text = response.body?.string().orEmpty()
-        val code = runCatching { JSONObject(text).optString("error", "request_failed") }
-            .getOrDefault("request_failed")
-        throw TransportError(response.code, code)
+        throw failure(response.code, response.body?.string().orEmpty())
+    }
+
+    /** Parses a gateway refusal, keeping any detail it carried. */
+    private fun failure(status: Int, text: String): TransportError {
+        val parsed = runCatching { JSONObject(text) }.getOrNull()
+        val code = parsed?.optString("error", "request_failed") ?: "request_failed"
+        val difficulty = parsed?.optInt("difficulty", -1)?.takeIf { it >= 0 }
+        return TransportError(status, code, difficulty)
     }
 
     private fun json(response: Response): JSONObject = response.use { res ->
         val text = res.body?.string().orEmpty()
-        if (!res.isSuccessful) {
-            val code = runCatching { JSONObject(text).optString("error", "request_failed") }
-                .getOrDefault("request_failed")
-            throw TransportError(res.code, code)
-        }
+        if (!res.isSuccessful) throw failure(res.code, text)
         // 204s have no body; a call site that treats null as "empty" would be
         // wrong here, so we return an empty object instead.
         if (text.isEmpty()) return JSONObject()

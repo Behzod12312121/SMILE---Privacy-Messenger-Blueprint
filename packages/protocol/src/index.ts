@@ -12,6 +12,12 @@ export const SIG_REGISTER = 'millygram/register/v1';
 export const SIG_AUTH = 'millygram/auth/v1';
 export const POW_CONTEXT = 'millygram/pow/v1';
 
+/**
+ * A separate context so a submission proof can never be presented as a
+ * registration proof, or the reverse. Same hash, different domain.
+ */
+export const REGISTRATION_POW_CONTEXT = 'millygram/pow-register/v1';
+
 export const DEVICE_ID_PRIMARY = 1;
 
 /** How long a delivery certificate stays usable before the client must refresh. */
@@ -41,6 +47,22 @@ export const PADDED_ENVELOPE_BYTES = 8192;
  * people received something and cannot narrow it further.
  */
 export const DEFAULT_BUCKET_SIZE = 16;
+
+/**
+ * Leading zero bits a registration must carry.
+ *
+ * Registration cannot be charged to an identity — there isn't one yet — and
+ * charging it to an address punishes everyone behind the same carrier NAT,
+ * which in this market is most of a country. So it is charged in CPU, the same
+ * trade the submission path already makes. Twenty bits is a few seconds on a
+ * cheap handset and is paid once per account, where submission's sixteen is
+ * paid per message.
+ *
+ * This is what a client solves before asking. The server decides what it will
+ * accept and says so when they differ, so it can be raised under load without
+ * every client needing a new build.
+ */
+export const REGISTRATION_POW_DIFFICULTY = 18;
 
 /**
  * libsignal's bindings require `Uint8Array<ArrayBuffer>` specifically, and a
@@ -187,6 +209,37 @@ const leadingZeroBits = (digest: Uint8Array): number => {
   return count;
 };
 
+const registrationPreimage = (payload: Uint8Array): Buffer =>
+  Buffer.concat([
+    Buffer.from(REGISTRATION_POW_CONTEXT, 'utf8'),
+    createHash('sha256').update(payload).digest(),
+  ]);
+
+/** Solves the work a registration has to carry. See REGISTRATION_POW_DIFFICULTY. */
+export function solveRegistrationWork(payload: Uint8Array, difficulty: number): number {
+  const preimage = registrationPreimage(payload);
+  const buffer = Buffer.alloc(preimage.length + 4);
+  preimage.copy(buffer, 0);
+
+  for (let nonce = 0; nonce <= 0xffffffff; nonce += 1) {
+    buffer.writeUInt32BE(nonce, preimage.length);
+    if (leadingZeroBits(createHash('sha256').update(buffer).digest()) >= difficulty) return nonce;
+  }
+  throw new Error('no registration proof of work found');
+}
+
+export function verifyRegistrationWork(
+  payload: Uint8Array,
+  nonce: number,
+  difficulty: number,
+): boolean {
+  const preimage = registrationPreimage(payload);
+  const buffer = Buffer.alloc(preimage.length + 4);
+  preimage.copy(buffer, 0);
+  buffer.writeUInt32BE(nonce, preimage.length);
+  return leadingZeroBits(createHash('sha256').update(buffer).digest()) >= difficulty;
+}
+
 const powPreimage = (bucketId: number, content: Uint8Array): Buffer => {
   // Explicitly big-endian. A typed-array view would use the host's byte order,
   // which happens to be little-endian everywhere this runs today and would
@@ -283,6 +336,11 @@ export const RegisterRequest = z.object({
   oneTimePreKeys: z.array(OneTimePreKeySchema).min(1).max(ONE_TIME_PREKEY_BATCH),
   timestamp: z.number().int().positive(),
   signature: b64url('registration signature', 128),
+  /**
+   * Proof of work over the signing payload. Not covered by the signature: it
+   * proves effort, not authorship, and the signature already proves the latter.
+   */
+  workNonce: z.number().int().min(0).max(0xffffffff),
 });
 export type RegisterRequest = z.infer<typeof RegisterRequest>;
 
@@ -379,7 +437,9 @@ export const ServerToClient = z.discriminatedUnion('type', [
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 
-export function registrationSigningPayload(req: Omit<RegisterRequest, 'signature'>): Bytes {
+export function registrationSigningPayload(
+  req: Omit<RegisterRequest, 'signature' | 'workNonce'>,
+): Bytes {
   return canonical(SIG_REGISTER, [
     req.username,
     req.deviceId,

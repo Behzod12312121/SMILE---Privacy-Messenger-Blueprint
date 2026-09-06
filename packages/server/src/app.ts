@@ -12,6 +12,7 @@ import {
   b64,
   decodeObliviousRequest,
   registrationSigningPayload,
+  verifyRegistrationWork,
   unb64,
   verifyProofOfWork,
   type StoredEnvelope,
@@ -22,6 +23,12 @@ import type { Store } from './db.js';
 import { Authenticator, type AuthenticatedCaller } from './auth.js';
 import { ServerIdentity, parseIdentityKey, verifyPreKeySignature } from './identity.js';
 import { RateLimiter } from './ratelimit.js';
+
+/**
+ * The key for a limiter that counts the whole gateway rather than one caller.
+ * A constant, so every request shares the bucket.
+ */
+const GLOBAL = 'gateway';
 
 export interface DeliveryHub {
   notify(bucketId: number, envelope: StoredEnvelope): void;
@@ -72,6 +79,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const limits = config.rateLimits;
   const registrationLimiter = new RateLimiter(limits.registration.capacity, limits.registration.refillPerSecond);
   const authLimiter = new RateLimiter(limits.auth.capacity, limits.auth.refillPerSecond);
+  const authPerAccountLimiter = new RateLimiter(
+    limits.authPerAccount.capacity,
+    limits.authPerAccount.refillPerSecond,
+  );
   const directoryLimiter = new RateLimiter(limits.directory.capacity, limits.directory.refillPerSecond);
   const inboundLimiter = new RateLimiter(limits.inbound.capacity, limits.inbound.refillPerSecond);
   const bundlePerCaller = new RateLimiter(
@@ -115,7 +126,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/v1/trust-root', async () => ({ trustRoot: b64(identity.trustRootPublic.serialize()) }));
 
   app.post('/v1/accounts', async (request, reply) => {
-    if (!registrationLimiter.tryConsume(request.ip)) return reply.code(429).send({ error: 'slow_down' });
+    // Deliberately not keyed on the caller's address. Whole Uzbek carriers sit
+    // behind a handful of public addresses, so rationing signups per address
+    // rations them per carrier. This is a ceiling for the gateway as a whole;
+    // what an individual registration costs is the work attached to it.
+    if (!registrationLimiter.tryConsume(GLOBAL)) return reply.code(429).send({ error: 'slow_down' });
 
     const parsed = RegisterRequest.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' });
@@ -127,8 +142,19 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const identityKey = parseIdentityKey(unb64(body.identityKey));
     if (!identityKey) return reply.code(400).send({ error: 'invalid_identity_key' });
 
-    const { signature, ...unsigned } = body;
-    if (!verifyPreKeySignature(identityKey, registrationSigningPayload(unsigned), unb64(signature))) {
+    const { signature, workNonce, ...unsigned } = body;
+    const payload = registrationSigningPayload(unsigned);
+
+    // Checked before the signature, because it is the cheaper of the two and
+    // is what makes flooding this endpoint expensive. The difficulty travels
+    // with the refusal so a client can pay more without needing a new build.
+    if (!verifyRegistrationWork(payload, workNonce, config.registrationPowDifficulty)) {
+      return reply
+        .code(400)
+        .send({ error: 'work_required', difficulty: config.registrationPowDifficulty });
+    }
+
+    if (!verifyPreKeySignature(identityKey, payload, unb64(signature))) {
       return reply.code(400).send({ error: 'invalid_signature' });
     }
     if (!verifyPreKeySignature(identityKey, unb64(body.signedPreKey.publicKey), unb64(body.signedPreKey.signature))) {
@@ -167,7 +193,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   app.get('/v1/accounts/challenge', async (request, reply) => {
-    if (!authLimiter.tryConsume(request.ip)) return reply.code(429).send({ error: 'slow_down' });
+    if (!authLimiter.tryConsume(GLOBAL)) return reply.code(429).send({ error: 'slow_down' });
 
     const parsed = z.object({ aci: z.uuid() }).safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' });
@@ -178,7 +204,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   app.post('/v1/accounts/auth', async (request, reply) => {
-    if (!authLimiter.tryConsume(request.ip)) return reply.code(429).send({ error: 'slow_down' });
+    // The global bucket pays for signature verification, which is CPU and so a
+    // resource of the gateway rather than of any address. Keying this on the
+    // caller's address locked out everyone behind a carrier NAT.
+    if (!authLimiter.tryConsume(GLOBAL)) return reply.code(429).send({ error: 'slow_down' });
 
     const parsed = AuthRequest.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' });
@@ -186,6 +215,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
     if (!authenticator.verifyChallengeResponse(aci, deviceId, nonce, signature)) {
       return reply.code(401).send({ error: 'unauthenticated' });
+    }
+
+    // Charged only once a signature has proved which account is asking, and
+    // only on success. Charging a failure would let anyone lock a chosen
+    // account out by sending rubbish signatures in its name.
+    if (!authPerAccountLimiter.tryConsume(aci)) {
+      return reply.code(429).send({ error: 'slow_down' });
     }
     return authenticator.mintToken(aci, deviceId);
   });

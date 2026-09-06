@@ -40,6 +40,7 @@ import {
   encodeObliviousRequest,
   pad,
   registrationSigningPayload,
+  solveRegistrationWork,
   solveProofOfWork,
   unb64,
   unpad,
@@ -49,6 +50,8 @@ import {
 
 /** Low enough to keep the suite fast, high enough that a random nonce fails. */
 const TEST_POW_DIFFICULTY = 10;
+/** Registration work, lowered so the suite is not spending seconds per account. */
+const TEST_REGISTRATION_POW = 8;
 
 let workdir: string;
 let server: RunningServer;
@@ -78,6 +81,7 @@ before(async () => {
     databasePath: join(workdir, 'relay.db'),
     rateLimits: testRateLimits,
     powDifficulty: TEST_POW_DIFFICULTY,
+    registrationPowDifficulty: TEST_REGISTRATION_POW,
   });
 });
 
@@ -108,7 +112,7 @@ function buildRegistration(username: string): RawAccount {
 
   const oneTimePreKey = PrivateKey.generate().getPublicKey();
 
-  const unsigned: Omit<RegisterRequest, 'signature'> = {
+  const unsigned: Omit<RegisterRequest, 'signature' | 'workNonce'> = {
     username,
     deviceId: 1,
     registrationId: generateRegistrationId(),
@@ -121,7 +125,11 @@ function buildRegistration(username: string): RawAccount {
 
   return {
     identity,
-    body: { ...unsigned, signature: b64(identity.privateKey.sign(registrationSigningPayload(unsigned))) },
+    body: {
+      ...unsigned,
+      signature: b64(identity.privateKey.sign(registrationSigningPayload(unsigned))),
+      workNonce: solveRegistrationWork(registrationSigningPayload(unsigned), TEST_REGISTRATION_POW),
+    },
   };
 }
 
@@ -132,6 +140,25 @@ const postJson = (path: string, body: unknown): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
+/**
+ * Re-solves the work for a body that a test has altered.
+ *
+ * Work is checked before signatures, because it is the cheaper of the two and
+ * is what makes flooding the endpoint expensive. A test that tampers with a
+ * registration therefore has to pay for the tampered version, or it never
+ * reaches the check it is actually about.
+ */
+const reworked = <T extends Record<string, unknown>>(body: T): T => {
+  const { signature, workNonce, ...unsigned } = body as unknown as RegisterRequest;
+  return {
+    ...body,
+    workNonce: solveRegistrationWork(
+      registrationSigningPayload(unsigned),
+      TEST_REGISTRATION_POW,
+    ),
+  };
+};
+
 const submit = (body: unknown): Promise<Response> =>
   fetch(`${server.url}/v1/messages`, {
     method: 'PUT',
@@ -139,11 +166,76 @@ const submit = (body: unknown): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
+describe('rate limiting is not keyed on the caller address', () => {
+  /** One full challenge/response round for an account. */
+  const authenticate = async (aci: string, identity: IdentityKeyPair): Promise<number> => {
+    const challenge = (await (
+      await fetch(`${server.url}/v1/accounts/challenge?aci=${aci}`)
+    ).json()) as { nonce: string };
+    const response = await postJson('/v1/accounts/auth', {
+      aci,
+      deviceId: 1,
+      nonce: challenge.nonce,
+      signature: b64(identity.privateKey.sign(authSigningPayload(aci, 1, unb64(challenge.nonce)))),
+    });
+    return response.status;
+  };
+
+  test('many accounts can register from one address', async () => {
+    // Every request in this suite comes from the same address, which is the
+    // situation of an entire Uzbek carrier behind one NAT. Under the old
+    // per-address limit the sixth of these would have been refused.
+    for (let n = 0; n < 12; n += 1) {
+      const { body } = buildRegistration(unique(`nat${n}`).username);
+      const response = await postJson('/v1/accounts', body);
+      assert.equal(response.status, 201, `registration ${n} from a shared address must succeed`);
+    }
+  });
+
+  test('a registration without work is refused, and told what it costs', async () => {
+    const { body } = buildRegistration(unique('nowork').username);
+    const response = await postJson('/v1/accounts', { ...body, workNonce: 0 });
+
+    assert.equal(response.status, 400);
+    const refusal = (await response.json()) as { error: string; difficulty: number };
+    assert.equal(refusal.error, 'work_required');
+    assert.equal(
+      refusal.difficulty,
+      TEST_REGISTRATION_POW,
+      'the refusal must say what to pay, so a client can pay more without a new build',
+    );
+  });
+
+  test('one account exhausting auth does not lock out another', async () => {
+    const noisy = buildRegistration(unique('noisy').username);
+    const quiet = buildRegistration(unique('quiet').username);
+    const noisyAci = ((await (await postJson('/v1/accounts', noisy.body)).json()) as { aci: string }).aci;
+    const quietAci = ((await (await postJson('/v1/accounts', quiet.body)).json()) as { aci: string }).aci;
+
+    // Spend the noisy account's whole per-account allowance.
+    let refused = 0;
+    for (let n = 0; n < 30; n += 1) {
+      if ((await authenticate(noisyAci, noisy.identity)) === 429) refused += 1;
+    }
+    assert.ok(refused > 0, 'a single account must still be limited');
+
+    // The quiet account shares the address and nothing else.
+    assert.equal(
+      await authenticate(quietAci, quiet.identity),
+      200,
+      'an account must not be locked out by what a neighbour on its address did',
+    );
+  });
+});
+
 describe('the relay rejects forged credentials', () => {
   test('a registration signature that does not cover the username is refused', async () => {
     const { body } = buildRegistration('honest_user');
     // The signature is genuine; it was simply made over a different username.
-    const response = await postJson('/v1/accounts', { ...body, username: 'impostor_user' });
+    const response = await postJson(
+      '/v1/accounts',
+      reworked({ ...body, username: 'impostor_user' }),
+    );
 
     assert.equal(response.status, 400);
     assert.equal(((await response.json()) as { error: string }).error, 'invalid_signature');
@@ -154,14 +246,17 @@ describe('the relay rejects forged credentials', () => {
     const attacker = IdentityKeyPair.generate();
     const foreignKey = PrivateKey.generate().getPublicKey();
 
-    const response = await postJson('/v1/accounts', {
-      ...body,
-      signedPreKey: {
-        keyId: 1,
-        publicKey: b64(foreignKey.serialize()),
-        signature: b64(attacker.privateKey.sign(foreignKey.serialize())),
-      },
-    });
+    const response = await postJson(
+      '/v1/accounts',
+      reworked({
+        ...body,
+        signedPreKey: {
+          keyId: 1,
+          publicKey: b64(foreignKey.serialize()),
+          signature: b64(attacker.privateKey.sign(foreignKey.serialize())),
+        },
+      }),
+    );
 
     assert.equal(response.status, 400);
     assert.equal(((await response.json()) as { error: string }).error, 'invalid_signature');

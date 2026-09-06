@@ -563,8 +563,30 @@ class MillygramClient private constructor(
                 client = options.base.http,
             )
 
+            // Registration is charged in CPU rather than to an address. Every
+            // user on an Uzbek mobile network shares a handful of public
+            // addresses, so an address-based limit would ration signups for a
+            // whole carrier; work costs the same wherever it is solved. The
+            // retry exists so the gateway can raise the price during a flood
+            // without every installed client breaking.
             val registered = try {
-                transport.register(body)
+                var difficulty = Protocol.REGISTRATION_POW_DIFFICULTY
+                var attempt = 0
+                var result: Transport.RegisterResponse? = null
+                while (result == null) {
+                    body.put("workNonce", Protocol.solveRegistrationWork(signPayload, difficulty))
+                    try {
+                        result = transport.register(body)
+                    } catch (failure: TransportError) {
+                        val harder = failure.code == "work_required" &&
+                            failure.requiredDifficulty != null &&
+                            failure.requiredDifficulty > difficulty
+                        if (!harder || attempt > 0) throw failure
+                        difficulty = failure.requiredDifficulty
+                        attempt += 1
+                    }
+                }
+                result
             } catch (t: Throwable) {
                 store.close()
                 throw t

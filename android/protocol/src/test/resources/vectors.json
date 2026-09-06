@@ -181,6 +181,12 @@
     "validNonce": 1977,
     "invalidNonce": 0
   },
+  "registrationWork": {
+    "difficulty": 12,
+    "payloadHex": "557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6",
+    "validNonce": 746,
+    "invalidNonce": 0
+  },
   "obliviousRequest": {
     "bucketId": 4294967295,
     "nonce": 123456,
