@@ -135,8 +135,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         DeliveryService.start(getApplication())
     }
 
-    /** Ends the session and the notifications with it. */
-    fun signOut() {
+    /**
+     * Closes the session and stops delivery, returning to the passphrase
+     * screen.
+     *
+     * Worth having in a messenger like this one: handing someone your phone is
+     * a normal thing to do, and until now there was no way to shut the
+     * conversations without uninstalling. The account is untouched — this locks
+     * it, it does not leave it.
+     */
+    fun lock() {
         DeliveryService.stop(getApplication())
         SessionHolder.release()
         _state.value = if (MillygramSession.exists(getApplication())) State.Locked else State.NeedsAccount

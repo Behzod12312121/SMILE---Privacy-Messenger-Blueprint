@@ -48,6 +48,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onToggleScreenLock: (Boolean) -> Unit,
     onCycleNotificationDetail: () -> Unit = {},
+    onLock: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -156,6 +157,20 @@ fun SettingsScreen(
                 label = "Ekran qulfi",
                 leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
                 trailing = { MillyToggle(account.screenLock, onToggleScreenLock) },
+            )
+        }
+
+        Spacer(Modifier.padding(top = Space.xl))
+        Card {
+            // Closing the app does not close the session any more — delivery
+            // keeps running so notifications can arrive — so there has to be a
+            // way to say stop.
+            SettingsRow(
+                label = "Qulflash",
+                value = "Suhbatlarni yopish",
+                leading = { KeyGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onLock,
             )
         }
 

@@ -35,6 +35,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
+import uz.millygram.app.DeliveryService
 import uz.millygram.app.data.AppViewModel
 import uz.millygram.app.data.ConversationState
 import uz.millygram.app.data.Delivery
@@ -182,6 +183,7 @@ private fun SignedIn(
 ) {
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val conversations by session.conversations.collectAsStateWithLifecycle()
     val identityWarnings by session.identityWarnings.collectAsStateWithLifecycle()
     val status by session.status.collectAsStateWithLifecycle()
@@ -213,6 +215,9 @@ private fun SignedIn(
         composable(Route.CONVERSATION) { entry ->
             val aci = entry.arguments?.getString("aci").orEmpty()
             val conversation = conversations.firstOrNull { it.aci == aci }
+
+            // Opening it means it has been seen.
+            LaunchedEffect(aci) { DeliveryService.clearNotification(context, aci) }
 
             ConversationScreen(
                 peerAci = aci,
@@ -264,6 +269,10 @@ private fun SignedIn(
                 onToggleScreenLock = {
                     screenLock = it
                     onScreenSecurityChanged(it)
+                },
+                onLock = {
+                    navController.popBackStack(Route.CHATS, inclusive = false)
+                    model.lock()
                 },
                 onCycleNotificationDetail = {
                     val order = NotificationDetail.entries

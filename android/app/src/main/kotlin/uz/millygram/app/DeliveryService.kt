@@ -57,7 +57,13 @@ class DeliveryService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    /**
+     * Not sticky. Restarting this after the process dies would bring back a
+     * service with no session to listen to — the vault key went with the
+     * process — so it would start, find nothing, and stop again. The app starts
+     * it when someone unlocks, which is the only moment it can do any work.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
 
     override fun onDestroy() {
         scope?.cancel()
@@ -146,6 +152,19 @@ class DeliveryService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, DeliveryService::class.java))
+        }
+
+        /**
+         * Clears the notification for a conversation the user is now reading.
+         *
+         * Without this they pile up until tapped, so opening the app and
+         * reading everything leaves a row of announcements about messages
+         * already seen.
+         */
+        fun clearNotification(context: Context, peerAci: String) {
+            runCatching {
+                NotificationManagerCompat.from(context).cancel(peerAci.hashCode())
+            }
         }
 
         private fun createChannels(context: Context) {
