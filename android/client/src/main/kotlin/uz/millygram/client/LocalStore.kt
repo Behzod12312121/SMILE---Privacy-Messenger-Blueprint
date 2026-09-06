@@ -161,7 +161,7 @@ class LocalStore private constructor(
     }
 
     companion object {
-        private const val SCHEMA_VERSION = 1
+        private const val SCHEMA_VERSION = 2
         private const val BACKUP_FORMAT = "millygram-backup-v1"
         private const val BASE64 = android.util.Base64.NO_WRAP
 
@@ -248,6 +248,64 @@ class LocalStore private constructor(
         private val ALLOWED_COLUMNS = setOf("key", "value", "address", "record", "id")
 
         /**
+         * Opens a vault without a passphrase, using the key the device holds.
+         *
+         * Returns null when there is nothing to open with — no vault, no device
+         * wrapping yet, no screen lock, or a key the system dropped because the
+         * lock was removed. Every one of those is an ordinary reason to fall
+         * back to asking, not an error.
+         */
+        fun openWithDeviceKey(context: Context, name: String): LocalStore? {
+            if (!context.getDatabasePath(name).exists()) return null
+
+            val helper = OpenHelper(context.applicationContext, name)
+            helper.setWriteAheadLoggingEnabled(true)
+            val db = helper.writableDatabase
+
+            db.query("vault", null, "id = 1", null, null, null, null).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    db.close()
+                    return null
+                }
+                val column = cursor.getColumnIndex("device_key")
+                val wrapped = if (column >= 0 && !cursor.isNull(column)) cursor.getBlob(column) else null
+                if (wrapped == null) {
+                    db.close()
+                    return null
+                }
+                val dek = DeviceKey.unwrap(wrapped)
+                if (dek == null) {
+                    db.close()
+                    return null
+                }
+                return LocalStore(db, dek)
+            }
+        }
+
+        /** Stores a device wrapping of the data key, if the device can hold one. */
+        private fun rememberDeviceKey(db: SQLiteDatabase, dek: ByteArray) {
+            val wrapped = DeviceKey.wrap(dek) ?: return
+            runCatching {
+                db.execSQL("UPDATE vault SET device_key = ? WHERE id = 1", arrayOf<Any>(wrapped))
+            }
+        }
+
+        /** True when this device can open its vault without being asked. */
+        fun hasDeviceKey(context: Context, name: String): Boolean {
+            if (!context.getDatabasePath(name).exists()) return false
+            return runCatching {
+                val helper = OpenHelper(context.applicationContext, name)
+                helper.readableDatabase.use { db ->
+                    db.query("vault", null, "id = 1", null, null, null, null).use { cursor ->
+                        if (!cursor.moveToFirst()) return false
+                        val column = cursor.getColumnIndex("device_key")
+                        column >= 0 && !cursor.isNull(column)
+                    }
+                }
+            }.getOrDefault(false)
+        }
+
+        /**
          * Opens an existing vault or creates one. The data-encryption key is
          * random and never derived from the passphrase directly, so a passphrase
          * change rewraps one key rather than re-encrypting the whole database.
@@ -284,6 +342,11 @@ class LocalStore private constructor(
                         // still derived a key and still left it in memory.
                         kek.fill(0)
                     }
+                    // Record a device wrapping so the next launch need not ask.
+                    // Done here rather than at registration as well, so an
+                    // account made before this existed picks one up simply by
+                    // being opened.
+                    rememberDeviceKey(db, dek)
                     return LocalStore(db, dek)
                 }
             }
@@ -299,6 +362,7 @@ class LocalStore private constructor(
                 "INSERT INTO vault (id, kdf_salt, wrapped_key, kdf_n, kdf_r, kdf_p) VALUES (1, ?, ?, ?, ?, ?)",
                 arrayOf<Any>(salt, wrapped, params.n, params.r, params.p),
             )
+            rememberDeviceKey(db, dek)
             return LocalStore(db, dek)
         }
     }
@@ -324,8 +388,13 @@ class LocalStore private constructor(
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            // There is only one schema version so far. A future upgrade should
-            // migrate in place under the same key, never re-derive it.
+            // Additive only, and nullable: an existing vault keeps its data key
+            // and its passphrase wrapping untouched. The device wrapping is
+            // filled in the next time the passphrase opens it, so an upgrade
+            // never has to re-derive anything and never risks the account.
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE vault ADD COLUMN device_key BLOB")
+            }
         }
     }
 }
@@ -338,7 +407,8 @@ private val SCHEMA: List<String> = listOf(
         wrapped_key  BLOB NOT NULL,
         kdf_n        INTEGER NOT NULL,
         kdf_r        INTEGER NOT NULL,
-        kdf_p        INTEGER NOT NULL
+        kdf_p        INTEGER NOT NULL,
+        device_key   BLOB
     )
     """.trimIndent(),
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL)",

@@ -702,9 +702,32 @@ class MillygramClient private constructor(
             passphrase: String,
         ) = LocalStore.importBackup(context, databaseName, backup, passphrase)
 
-        fun open(options: MillygramOptions): MillygramClient {
-            val store = LocalStore.open(options.context, options.databaseName, options.passphrase)
+        /**
+         * Opens without a passphrase, using the key the device holds.
+         *
+         * Null when this device cannot — no vault, no screen lock, or a key the
+         * system dropped. The caller asks for the passphrase then, which is
+         * also how a restored account gets its device wrapping.
+         */
+        fun openWithDeviceKey(options: MillygramOptions): MillygramClient? {
+            val store = LocalStore.openWithDeviceKey(options.context, options.databaseName)
+                ?: return null
+            return runCatching { fromStore(store, options) }
+                .getOrElse {
+                    store.close()
+                    null
+                }
+        }
 
+        /** True when the next launch can skip the passphrase. */
+        fun canOpenWithDeviceKey(options: MillygramOptions): Boolean =
+            LocalStore.hasDeviceKey(options.context, options.databaseName)
+
+        fun open(options: MillygramOptions): MillygramClient =
+            fromStore(LocalStore.open(options.context, options.databaseName, options.passphrase), options)
+
+        /** Everything after the vault is open, whichever key opened it. */
+        private fun fromStore(store: LocalStore, options: MillygramOptions): MillygramClient {
             val identityRaw = store.getMeta(META_IDENTITY)
             val aci = store.getMetaString(META_ACI)
             val username = store.getMetaString(META_USERNAME)

@@ -19,6 +19,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import uz.millygram.app.data.Arrival
 import uz.millygram.app.data.NotificationDetail
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.suspendCancellableCoroutine
+import uz.millygram.app.data.MillygramSession
 import uz.millygram.app.data.SessionHolder
 
 /**
@@ -45,15 +51,66 @@ class DeliveryService : Service() {
         createChannels(this)
         startForeground(ONGOING_ID, ongoingNotification())
 
-        val session = SessionHolder.session ?: run {
+        val started = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        scope = started
+        started.launch { attach() }
+    }
+
+    /**
+     * Finds a session to listen to, waiting for the screen to be unlocked if it
+     * has to.
+     *
+     * After a restart the phone is still locked when boot completes, and the
+     * key that opens the vault is deliberately unusable until it is not. So the
+     * first attempt normally fails, and the right thing is to wait for the user
+     * to unlock — which they do within minutes of turning a phone on — rather
+     * than stay silent until somebody opens the app.
+     */
+    private suspend fun attach() {
+        var session = SessionHolder.session ?: resume()
+        if (session == null) {
+            awaitUnlock()
+            session = SessionHolder.session ?: resume()
+        }
+        val listening = session ?: run {
             stopSelf()
             return
         }
+        listening.arrivals.collect { arrival ->
+            notifyArrival(arrival, listening.notificationDetail)
+        }
+    }
 
-        val started = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        scope = started
-        started.launch {
-            session.arrivals.collect { arrival -> notifyArrival(arrival, session.notificationDetail) }
+    private suspend fun resume(): MillygramSession? {
+        val session = runCatching {
+            MillygramSession.resume(this, BuildConfig.DEFAULT_SERVER, BuildConfig.DEFAULT_RELAY)
+        }.getOrNull() ?: return null
+        SessionHolder.adopt(session)
+        session.connect()
+        return session
+    }
+
+    /** Suspends until the screen is unlocked, returning at once if it already is. */
+    private suspend fun awaitUnlock() {
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (keyguard?.isKeyguardLocked != true) return
+
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    runCatching { context.unregisterReceiver(this) }
+                    if (!continuation.isCompleted) continuation.resumeWith(Result.success(Unit))
+                }
+            }
+            // Registered at runtime, which is the only way this broadcast is
+            // still delivered.
+            ContextCompat.registerReceiver(
+                this,
+                receiver,
+                IntentFilter(Intent.ACTION_USER_PRESENT),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            continuation.invokeOnCancellation { runCatching { unregisterReceiver(receiver) } }
         }
     }
 

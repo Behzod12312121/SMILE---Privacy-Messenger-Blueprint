@@ -465,6 +465,34 @@ class MillygramSession private constructor(
             open(context, passphrase, serverUrl, obliviousRelayUrl)
         }
 
+        /** Opens without asking, when the device can. Null when it cannot. */
+        suspend fun resume(
+            context: Context,
+            serverUrl: String,
+            obliviousRelayUrl: String? = null,
+        ): MillygramSession? = withContext(Dispatchers.IO) {
+            val client = MillygramClient.openWithDeviceKey(
+                MillygramOptions(
+                    context = context,
+                    databaseName = DATABASE,
+                    passphrase = "",
+                    serverUrl = serverUrl,
+                    obliviousRelayUrl = obliviousRelayUrl,
+                ),
+            ) ?: return@withContext null
+            MillygramSession(client, CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        }
+
+        /** True when a launch can skip the passphrase screen entirely. */
+        fun canResume(context: Context): Boolean = MillygramClient.canOpenWithDeviceKey(
+            MillygramOptions(
+                context = context,
+                databaseName = DATABASE,
+                passphrase = "",
+                serverUrl = "",
+            ),
+        )
+
         fun exists(context: Context): Boolean =
             context.getDatabasePath(DATABASE).let(File::exists)
 

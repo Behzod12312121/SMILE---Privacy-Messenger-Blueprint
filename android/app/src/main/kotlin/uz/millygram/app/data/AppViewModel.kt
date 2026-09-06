@@ -39,9 +39,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // app after the activity was destroyed does not ask for the passphrase
         // again while the socket is still open behind it.
         SessionHolder.session?.let(State::Ready)
-            ?: if (MillygramSession.exists(application)) State.Locked else State.NeedsAccount,
+            ?: when {
+                // Nothing to ask for: the device holds the key. The screen the
+                // user saw here was a second passphrase no other messenger asks
+                // for, and asking for it every launch is what made the app feel
+                // like work.
+                MillygramSession.canResume(application) -> State.Working("Ochilmoqda…")
+                MillygramSession.exists(application) -> State.Locked
+                else -> State.NeedsAccount
+            },
     )
-    val state: StateFlow<State> = _state.asStateFlow()
+
+
 
     /** Where the gateway lives. 10.0.2.2 is the emulator's alias for the host. */
     var serverUrl: String = DEFAULT_SERVER
@@ -55,6 +64,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     var relayUrl: String = DEFAULT_RELAY
         private set
+
+    init {
+        if (SessionHolder.session == null && MillygramSession.canResume(getApplication())) resume()
+    }
+
+    /** Opens with the device-held key, falling back to the passphrase screen. */
+    private fun resume() {
+        viewModelScope.launch {
+            runCatching { MillygramSession.resume(getApplication(), serverUrl, relayUrl.ifEmpty { null }) }
+                .getOrNull()
+                ?.let { session ->
+                    adopt(session)
+                    _state.value = State.Ready(session)
+                }
+                ?: run { _state.value = State.Locked }
+        }
+    }
+    val state: StateFlow<State> = _state.asStateFlow()
 
     fun register(username: String, passphrase: String, server: String, relay: String) {
         if (!Protocol.isValidUsername(username)) {
