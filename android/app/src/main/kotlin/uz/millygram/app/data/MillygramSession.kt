@@ -10,8 +10,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -50,6 +53,18 @@ class MillygramSession private constructor(
      * from here, and it must reach the user rather than being counted as one
      * of the undecryptable envelopes every bucket member receives.
      */
+    /**
+     * Emitted when a message arrives from someone else.
+     *
+     * Carries who it came from and nothing else. What the notification says is
+     * decided where it is shown, and it deliberately does not say much: this
+     * app keeps itself out of screenshots and the recents thumbnail, and
+     * putting the text of a message on the lock screen would undo that for the
+     * one person most likely to be looking over the user's shoulder.
+     */
+    private val _arrivals = MutableSharedFlow<Arrival>(extraBufferCapacity = 32)
+    val arrivals: SharedFlow<Arrival> = _arrivals.asSharedFlow()
+
     private val _identityWarnings = MutableStateFlow<Set<String>>(emptySet())
     val identityWarnings: StateFlow<Set<String>> = _identityWarnings.asStateFlow()
 
@@ -115,6 +130,13 @@ class MillygramSession private constructor(
                                 sentAt = incoming.sentAt,
                                 outgoing = false,
                             )
+                            _arrivals.tryEmit(
+                                Arrival(
+                                    peerAci = incoming.senderAci,
+                                    username = contactName(incoming.senderAci),
+                                    body = incoming.body,
+                                ),
+                            )
                         },
                         onDisconnected = { dropped.complete(Unit) },
                     )
@@ -148,6 +170,11 @@ class MillygramSession private constructor(
      * again, and clears the warning. Dismissing the warning without this leaves
      * the conversation silently broken, so the two belong together.
      */
+    /** What notifications are allowed to say. Persisted, so it survives a restart. */
+    var notificationDetail: NotificationDetail
+        get() = NotificationDetail.parse(client.getAppData(NOTIFY_DETAIL))
+        set(value) = client.putAppData(NOTIFY_DETAIL, value.stored)
+
     suspend fun acceptNewIdentity(peerAci: String) = withContext(Dispatchers.IO) {
         client.forgetPeer(peerAci)
         _identityWarnings.update { it - peerAci }
@@ -408,6 +435,7 @@ class MillygramSession private constructor(
         private const val HISTORY_INDEX = "history:index"
         /** The single blob every conversation used to share. Read once, then emptied. */
         private const val LEGACY_HISTORY = "history"
+        private const val NOTIFY_DETAIL = "notifyDetail"
         private const val MIN_BACKOFF_MS = 1_000L
         private const val MAX_BACKOFF_MS = 30_000L
         private const val DATABASE = "millygram.db"
@@ -505,4 +533,33 @@ fun splitLegacyHistory(legacy: String): SplitHistory {
         }.toString()
     }
     return SplitHistory(acis.toString(), conversations)
+}
+
+/** A message that has just arrived, for whatever wants to announce it. */
+data class Arrival(val peerAci: String, val username: String, val body: String)
+
+/**
+ * How much a notification may say.
+ *
+ * A locked phone never shows more than that something arrived, whichever of
+ * these is chosen — that part is not configurable, because the person most
+ * likely to read someone's lock screen is standing next to them. This governs
+ * what is shown once the phone is unlocked.
+ */
+enum class NotificationDetail(val stored: String) {
+    /** Who wrote, and what they wrote. */
+    NameAndMessage("full"),
+
+    /** Who wrote, and nothing else. */
+    NameOnly("name"),
+
+    /** That something arrived. */
+    Nothing("none"),
+    ;
+
+    companion object {
+        /** Name only by default: enough to act on, without putting words anywhere. */
+        fun parse(stored: String?): NotificationDetail =
+            entries.firstOrNull { it.stored == stored } ?: NameOnly
+    }
 }

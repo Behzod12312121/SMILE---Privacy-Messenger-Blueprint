@@ -47,6 +47,7 @@ fun SettingsScreen(
     account: Account,
     onBack: () -> Unit,
     onToggleScreenLock: (Boolean) -> Unit,
+    onCycleNotificationDetail: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -102,6 +103,29 @@ fun SettingsScreen(
                 value = "Bitta (shu qurilma)",
                 enabled = false,
                 leading = { DeviceGlyph(theme.textSecondary) },
+            )
+        }
+
+        Spacer(Modifier.padding(top = Space.xl))
+        SectionHeader("Bildirishnomalar")
+        Card {
+            // Cycled rather than opened as a dialog: three options, and the
+            // current one is the label.
+            SettingsRow(
+                label = "Bildirishnomada koʻrsatilsin",
+                value = account.notificationDetail,
+                leading = { BellGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onCycleNotificationDetail,
+            )
+            RowSeparator()
+            // Not a setting. What a locked screen shows is fixed, because the
+            // person most likely to read one is standing next to the user.
+            SettingsRow(
+                label = "Qulflangan ekranda",
+                value = "Faqat “Yangi xabar”",
+                enabled = false,
+                leading = { EyeOffGlyph(theme.textDisabled) },
             )
         }
 

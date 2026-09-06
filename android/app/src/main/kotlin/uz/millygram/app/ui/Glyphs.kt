@@ -128,3 +128,35 @@ fun DeviceGlyph(color: Color, modifier: Modifier = Modifier, size: Dp = 20.dp) {
         )
     }
 }
+
+/** A bell, for the notification section. */
+@Composable
+fun BellGlyph(color: Color, modifier: Modifier = Modifier, size: Dp = 20.dp) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = Stroke(width = w * 0.09f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+        val body = Path().apply {
+            moveTo(w * 0.22f, h * 0.66f)
+            cubicTo(w * 0.22f, h * 0.30f, w * 0.34f, h * 0.20f, w * 0.50f, h * 0.20f)
+            cubicTo(w * 0.66f, h * 0.20f, w * 0.78f, h * 0.30f, w * 0.78f, h * 0.66f)
+            close()
+        }
+        drawPath(body, color, style = stroke)
+        drawLine(
+            color,
+            androidx.compose.ui.geometry.Offset(w * 0.14f, h * 0.70f),
+            androidx.compose.ui.geometry.Offset(w * 0.86f, h * 0.70f),
+            stroke.width,
+            StrokeCap.Round,
+        )
+        drawLine(
+            color,
+            androidx.compose.ui.geometry.Offset(w * 0.42f, h * 0.80f),
+            androidx.compose.ui.geometry.Offset(w * 0.58f, h * 0.80f),
+            stroke.width,
+            StrokeCap.Round,
+        )
+    }
+}

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import uz.millygram.app.DeliveryService
 import uz.millygram.protocol.Protocol
 
 /**
@@ -34,7 +35,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val _state = MutableStateFlow<State>(
-        if (MillygramSession.exists(application)) State.Locked else State.NeedsAccount,
+        // Reuse a session the process is already holding, so returning to the
+        // app after the activity was destroyed does not ask for the passphrase
+        // again while the socket is still open behind it.
+        SessionHolder.session?.let(State::Ready)
+            ?: if (MillygramSession.exists(application)) State.Locked else State.NeedsAccount,
     )
     val state: StateFlow<State> = _state.asStateFlow()
 
@@ -81,7 +86,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     relayUrl.ifEmpty { null },
                 )
             }.onSuccess { session ->
-                session.connect()
+                adopt(session)
                 _state.value = State.Ready(session)
             }.onFailure { failure ->
                 _state.value = State.Failed(describe(failure), State.NeedsAccount)
@@ -103,7 +108,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     relayUrl.ifEmpty { null },
                 )
             }.onSuccess { session ->
-                session.connect()
+                adopt(session)
                 _state.value = State.Ready(session)
             }.onFailure {
                 // The vault does not distinguish a wrong passphrase from a
@@ -113,6 +118,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = State.Failed("Parol notoʻgʻri", State.Locked)
             }
         }
+    }
+
+    /**
+     * Hands the session to the process rather than to this view model, and
+     * starts the service that keeps its socket open.
+     *
+     * The session used to be closed in onCleared, which tied the ability to
+     * receive anything to whether an activity happened to exist. It outlives
+     * the screen now; what it cannot outlive is the process, because the vault
+     * key is derived from a passphrase that is never written down.
+     */
+    private fun adopt(session: MillygramSession) {
+        SessionHolder.adopt(session)
+        session.connect()
+        DeliveryService.start(getApplication())
+    }
+
+    /** Ends the session and the notifications with it. */
+    fun signOut() {
+        DeliveryService.stop(getApplication())
+        SessionHolder.release()
+        _state.value = if (MillygramSession.exists(getApplication())) State.Locked else State.NeedsAccount
     }
 
     fun dismissError() {
@@ -163,10 +190,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Same wording, for failures that surface outside the onboarding screen. */
     fun explain(failure: Throwable): String = describe(failure)
 
-    override fun onCleared() {
-        (_state.value as? State.Ready)?.session?.close()
-        super.onCleared()
-    }
+    // Deliberately no onCleared teardown. The session belongs to the process
+    // now, not to this view model, or closing the screen would stop delivery.
 
     private companion object {
         /** Set per build type; see the app's build.gradle.kts. */

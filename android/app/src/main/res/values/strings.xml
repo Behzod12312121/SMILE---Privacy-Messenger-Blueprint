@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MillyGram</string>
+    <string name="channel_delivery">Xabarlarni kutish</string>
+    <string name="channel_messages">Yangi xabarlar</string>
+    <string name="notification_listening">Xabarlar kutilmoqda</string>
+    <!-- Deliberately says nothing about who wrote or what they said. -->
+    <string name="notification_new_message">Yangi xabar</string>
+    <string name="notification_wrote_to_you">Sizga xabar yozdi</string>
 </resources>

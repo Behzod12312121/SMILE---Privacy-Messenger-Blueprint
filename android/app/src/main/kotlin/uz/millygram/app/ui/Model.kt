@@ -62,6 +62,8 @@ data class Account(
     val displayName: String,
     val username: String,
     val screenLock: Boolean,
+    /** What a notification is allowed to say, already in words. */
+    val notificationDetail: String,
     val language: String,
     val theme: String,
     val buildHash: String,

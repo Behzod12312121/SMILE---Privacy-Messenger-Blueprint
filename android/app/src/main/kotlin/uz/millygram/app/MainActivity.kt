@@ -1,8 +1,13 @@
 package uz.millygram.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContentTransitionScope
@@ -34,6 +39,7 @@ import uz.millygram.app.data.AppViewModel
 import uz.millygram.app.data.ConversationState
 import uz.millygram.app.data.Delivery
 import uz.millygram.app.data.MillygramSession
+import uz.millygram.app.data.NotificationDetail
 import uz.millygram.app.theme.MillyGramTheme
 import uz.millygram.app.theme.MillyType
 import uz.millygram.app.theme.theme
@@ -58,13 +64,31 @@ class MainActivity : ComponentActivity() {
      */
     private var screenSecurity = true
 
+    /**
+     * Asked for once, at the top. Without it Android 13 and later drop every
+     * notification silently, which looks exactly like a messenger that does not
+     * work.
+     */
+    private val askForNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyScreenSecurity(true)
+        openRequest = intent.getStringExtra(DeliveryService.EXTRA_CONVERSATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         enableEdgeToEdge()
         setContent {
             MillyGramTheme {
-                MillyGramApp(onScreenSecurityChanged = ::applyScreenSecurity)
+                MillyGramApp(
+                    onScreenSecurityChanged = ::applyScreenSecurity,
+                    openConversation = openRequest,
+                )
             }
         }
     }
@@ -75,6 +99,20 @@ class MainActivity : ComponentActivity() {
      * Android caches an image of whatever was on screen when the app was
      * backgrounded, readable by anyone holding an unlocked handset.
      */
+    /**
+     * The conversation a tapped notification asked for, if any.
+     *
+     * Read as state so a tap that arrives while the activity is already up
+     * still moves the screen, rather than only working from cold.
+     */
+    private var openRequest by mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openRequest = intent.getStringExtra(DeliveryService.EXTRA_CONVERSATION)
+    }
+
     private fun applyScreenSecurity(enabled: Boolean) {
         screenSecurity = enabled
         if (enabled) {
@@ -97,7 +135,10 @@ private object Route {
 }
 
 @Composable
-private fun MillyGramApp(onScreenSecurityChanged: (Boolean) -> Unit) {
+private fun MillyGramApp(
+    onScreenSecurityChanged: (Boolean) -> Unit,
+    openConversation: String? = null,
+) {
     val model: AppViewModel = viewModel()
     val state by model.state.collectAsStateWithLifecycle()
 
@@ -123,7 +164,8 @@ private fun MillyGramApp(onScreenSecurityChanged: (Boolean) -> Unit) {
             )
         }
 
-        is AppViewModel.State.Ready -> SignedIn(current.session, model, onScreenSecurityChanged)
+        is AppViewModel.State.Ready ->
+            SignedIn(current.session, model, onScreenSecurityChanged, openConversation)
     }
 }
 
@@ -136,6 +178,7 @@ private fun SignedIn(
     session: MillygramSession,
     model: AppViewModel,
     onScreenSecurityChanged: (Boolean) -> Unit,
+    openConversation: String? = null,
 ) {
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
@@ -145,6 +188,7 @@ private fun SignedIn(
 
     var screenLock by remember { mutableStateOf(true) }
     var startError by remember { mutableStateOf<String?>(null) }
+    var notificationDetail by remember { mutableStateOf(session.notificationDetail) }
     var starting by remember { mutableStateOf(false) }
 
     NavHost(
@@ -215,11 +259,17 @@ private fun SignedIn(
 
         composable(Route.SETTINGS) {
             SettingsScreen(
-                account = session.toAccount(screenLock),
+                account = session.toAccount(screenLock, notificationDetail),
                 onBack = { navController.popBackStack() },
                 onToggleScreenLock = {
                     screenLock = it
                     onScreenSecurityChanged(it)
+                },
+                onCycleNotificationDetail = {
+                    val order = NotificationDetail.entries
+                    val next = order[(order.indexOf(session.notificationDetail) + 1) % order.size]
+                    session.notificationDetail = next
+                    notificationDetail = next
                 },
             )
         }
@@ -263,6 +313,12 @@ private fun SignedIn(
     }
 
     LaunchedEffect(Unit) { onScreenSecurityChanged(screenLock) }
+
+    // A notification names the conversation it came from, so tapping one lands
+    // in that conversation rather than merely opening the app.
+    LaunchedEffect(openConversation) {
+        openConversation?.let { navController.navigate(Route.conversation(it)) }
+    }
 }
 
 /* ---- mapping session state onto what the screens render ---- */
@@ -312,11 +368,16 @@ private fun ConversationState?.toTimeline(): List<TimelineItem> {
     }
 }
 
-private fun MillygramSession.toAccount(screenLock: Boolean) =
+private fun MillygramSession.toAccount(screenLock: Boolean, detail: NotificationDetail) =
     uz.millygram.app.ui.Account(
         displayName = username,
         username = username,
         screenLock = screenLock,
+        notificationDetail = when (detail) {
+            NotificationDetail.NameAndMessage -> "Ism va xabar"
+            NotificationDetail.NameOnly -> "Faqat ism"
+            NotificationDetail.Nothing -> "Hech narsa"
+        },
         language = "Oʻzbekcha (lotin)",
         theme = "Tizim",
         buildHash = BuildConfigHash,
