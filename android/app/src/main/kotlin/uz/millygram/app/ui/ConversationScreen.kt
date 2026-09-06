@@ -51,6 +51,7 @@ import uz.millygram.app.theme.MillyType
 import uz.millygram.app.theme.Radius
 import uz.millygram.app.theme.Space
 import uz.millygram.app.theme.theme
+import uz.millygram.protocol.Protocol
 
 /**
  * A conversation.
@@ -319,7 +320,19 @@ private fun Composer(onSend: (String) -> Unit) {
                 }
                 BasicTextField(
                     value = draft,
-                    onValueChange = { draft = it },
+                    // Capped where the protocol caps it, and counted in bytes
+                    // rather than characters: the modifier letters Uzbek is
+                    // written with take two bytes each, so a 4096-character
+                    // limit would let through a message the client then refuses
+                    // to send. Refusing the keystroke is kinder than accepting
+                    // the message and marking it failed forever — retrying a
+                    // body that is too long fails every time, with nothing on
+                    // screen saying why.
+                    onValueChange = { candidate ->
+                        if (candidate.toByteArray(Charsets.UTF_8).size <= Protocol.MAX_PLAINTEXT_BYTES) {
+                            draft = candidate
+                        }
+                    },
                     textStyle = LocalTextStyle.current.merge(MillyType.Body).merge(
                         androidx.compose.ui.text.TextStyle(color = theme.textPrimary),
                     ),

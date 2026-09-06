@@ -10,6 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import uz.millygram.protocol.Protocol
 
 /**
  * The end-to-end test.
@@ -216,6 +217,35 @@ class EndToEndTest {
             listOf("one", "two"),
             received.sorted(),
         )
+    }
+
+    @Test
+    fun aMessageAtTheDocumentedLimitFitsAndOneOverItIsRefused() {
+        val sender = register("limita")
+        val recipient = register("limitb")
+
+        // The limit is a byte count, and the whole payload — JSON wrapper,
+        // sealed-sender overhead, padding to a fixed envelope — has to fit
+        // around it. A limit the protocol advertises but cannot actually carry
+        // would fail at the worst possible moment: on the longest message
+        // somebody had just finished writing.
+        val atLimit = "a".repeat(Protocol.MAX_PLAINTEXT_BYTES)
+        assertEquals(Protocol.MAX_PLAINTEXT_BYTES, atLimit.toByteArray(Charsets.UTF_8).size)
+        sender.send(recipient.username, atLimit)
+
+        val received = mutableListOf<String>()
+        recipient.catchUp { received += it.body }
+        assertEquals("a message at the limit must be deliverable", listOf(atLimit), received)
+
+        // And one byte more is refused by the client rather than by the relay,
+        // so nothing is spent solving work for an envelope that cannot be sent.
+        var refused = false
+        try {
+            sender.send(recipient.aci, "a".repeat(Protocol.MAX_PLAINTEXT_BYTES + 1))
+        } catch (_: IllegalArgumentException) {
+            refused = true
+        }
+        assertTrue("a body over the limit must be refused", refused)
     }
 
     @Test
