@@ -41,6 +41,7 @@ import uz.millygram.app.theme.MillyType
 import uz.millygram.app.theme.Radius
 import uz.millygram.app.theme.Space
 import uz.millygram.app.theme.theme
+import uz.millygram.protocol.Protocol
 
 /**
  * First run, and unlock.
@@ -105,8 +106,16 @@ fun OnboardingScreen(
                 prefix = "@",
                 onValueChange = {
                     // ASCII only by protocol rule: a lookalike handle would let
-                    // one person be mistaken for another.
-                    username = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(32)
+                    // one person be mistaken for another — Cyrillic а and Latin
+                    // a are different characters that render identically.
+                    //
+                    // isLetterOrDigit was doing the opposite of that. It is
+                    // Unicode-aware, so it accepted Cyrillic, which most of
+                    // this market can type without trying: the field took the
+                    // name, and the protocol rejected it a tap later with a
+                    // message about a-z. Refusing the keystroke says the same
+                    // thing at the moment it is useful.
+                    username = Protocol.sanitizeUsername(it)
                 },
             )
             Spacer(Modifier.height(Space.lg))

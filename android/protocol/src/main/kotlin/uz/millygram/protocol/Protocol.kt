@@ -331,6 +331,9 @@ object Protocol {
     fun authSigningPayload(aci: String, deviceId: Long, nonce: ByteArray): ByteArray =
         canonical(SIG_AUTH, listOf(Part.Text(aci), Part.Integer(deviceId), Part.Raw(nonce)))
 
+    /** Kept beside the pattern, so a caller trimming input cannot disagree with it. */
+    const val USERNAME_MAX_LENGTH: Int = 32
+
     private val USERNAME = Regex("^[a-z0-9_]{3,32}$")
 
     /**
@@ -338,4 +341,24 @@ object Protocol {
      * a handle that renders identically to someone else's.
      */
     fun isValidUsername(value: String): Boolean = USERNAME.matches(value)
+
+    /**
+     * Trims typed input down to what [isValidUsername] will accept.
+     *
+     * Lives next to the pattern deliberately. The onboarding field used to do
+     * this itself with isLetterOrDigit, which is Unicode-aware and therefore
+     * accepted Cyrillic — a script most of this market can type without
+     * trying. The field took the name and the protocol refused it a tap later,
+     * complaining about a-z. Worse in principle: Cyrillic а and Latin a render
+     * identically, so a rule that admitted both would let one person be
+     * mistaken for another, which is the reason the pattern is ASCII in the
+     * first place.
+     *
+     * Too short to be valid is left to [isValidUsername]; a filter that
+     * silently lengthened input would be a strange thing.
+     */
+    fun sanitizeUsername(input: String): String =
+        input.lowercase()
+            .filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }
+            .take(USERNAME_MAX_LENGTH)
 }
