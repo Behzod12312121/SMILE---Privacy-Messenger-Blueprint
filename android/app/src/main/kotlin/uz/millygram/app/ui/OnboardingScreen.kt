@@ -211,6 +211,19 @@ private fun FieldLabel(text: String) {
     Spacer(Modifier.height(Space.sm))
 }
 
+/**
+ * The longest anything typed on this screen may be.
+ *
+ * Generous for a passphrase or a host name and far below where a single-line
+ * text field starts to struggle. Without it, pasting a large clipboard into one
+ * of these — the passphrase field is the easy one, since it is masked and every
+ * character becomes a bullet to lay out — puts the main thread into text layout
+ * long enough for Android to offer to kill the app. Reached by accident while
+ * driving the emulator, which is a fair impression of a user with a full
+ * clipboard.
+ */
+private const val MAX_FIELD_LENGTH = 256
+
 @Composable
 private fun Field(
     value: String,
@@ -239,7 +252,11 @@ private fun Field(
             }
             BasicTextField(
                 value = value,
-                onValueChange = onValueChange,
+                // Enforced here rather than at each call site, so a field added
+                // later cannot forget it.
+                onValueChange = { candidate ->
+                    if (candidate.length <= MAX_FIELD_LENGTH) onValueChange(candidate)
+                },
                 singleLine = true,
                 visualTransformation = if (secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 keyboardOptions = KeyboardOptions(
