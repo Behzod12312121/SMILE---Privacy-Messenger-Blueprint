@@ -19,7 +19,9 @@ import {
   ONE_TIME_PREKEY_BATCH,
   REGISTRATION_POW_DIFFICULTY,
   solveRegistrationWork,
+  MAX_PREKEY_ID,
   ONE_TIME_PREKEY_LOW_WATER,
+  PREKEY_ROTATION_MS,
   b64,
   bytes,
   isValidUsername,
@@ -32,7 +34,14 @@ import {
   type StoredEnvelope,
 } from '@millygram/protocol';
 import { buildStores, LocalStore, type ProtocolStores } from './store.js';
-import { deserializeIdentity, generateInitialKeys, generateOneTimePreKeys, generateRegistrationId } from './keys.js';
+import {
+  deserializeIdentity,
+  generateInitialKeys,
+  generateKyberPreKey,
+  generateOneTimePreKeys,
+  generateRegistrationId,
+  generateSignedPreKey,
+} from './keys.js';
 import { Transport, TransportError } from './transport.js';
 
 export { LocalStore, MillygramIdentityStore, buildStores } from './store.js';
@@ -51,6 +60,9 @@ const META_TRUST_ROOT = 'trustRoot';
 const META_SENDER_CERT = 'senderCert';
 const META_SENDER_CERT_EXPIRY = 'senderCertExpiresAt';
 const META_NEXT_PREKEY_ID = 'nextPreKeyId';
+const META_SIGNED_PREKEY_ID = 'signedPreKeyId';
+const META_KYBER_PREKEY_ID = 'kyberPreKeyId';
+const META_PREKEYS_ROTATED_AT = 'preKeysRotatedAt';
 const META_CURSOR = 'bucketCursor';
 const peerBucketMeta = (aci: string): string => `peerBucket:${aci}`;
 
@@ -139,6 +151,12 @@ export class MillygramClient {
     const stores = buildStores(store, identity, registrationId);
     const material = await generateInitialKeys(identity, stores);
     store.setMetaNumber(META_NEXT_PREKEY_ID, ONE_TIME_PREKEY_BATCH + 1);
+    store.setMetaNumber(META_SIGNED_PREKEY_ID, 1);
+    store.setMetaNumber(META_KYBER_PREKEY_ID, 1);
+    // These were generated a moment ago, so the rotation clock starts now
+    // rather than at zero — otherwise every new account rotates on its first
+    // connection, throwing away keys nobody has used yet.
+    store.setMetaNumber(META_PREKEYS_ROTATED_AT, Date.now());
 
     const unsigned: Omit<RegisterRequest, 'signature' | 'workNonce'> = {
       username: options.username,
@@ -493,6 +511,7 @@ export class MillygramClient {
       },
       onCaughtUp: () => {
         void this.replenishPreKeys();
+        void this.rotatePreKeys();
       },
     });
     await this.catchUp(onMessage);
@@ -508,6 +527,46 @@ export class MillygramClient {
    * they run out, new contacts fall back to a bundle without one, which is
    * weaker, so the pool is topped up as it drains.
    */
+  /**
+   * Replaces the signed and Kyber prekeys once they are old enough.
+   *
+   * The gateway has always accepted these — the replenish request has fields
+   * for both and verifies their signatures — but nothing ever sent them, so a
+   * pair generated at registration was served for the life of the account. See
+   * PREKEY_ROTATION_MS for what that costs.
+   *
+   * The key being replaced is kept. Someone may have fetched a bundle moments
+   * before this ran, and the session they open with it names the old key;
+   * deleting it immediately would make that first message undecryptable, and
+   * an undecryptable message is dropped in silence here by design. The one
+   * before it is dropped, so exactly two generations are ever held.
+   */
+  async rotatePreKeys(now = Date.now()): Promise<void> {
+    const rotatedAt = this.store.getMetaNumber(META_PREKEYS_ROTATED_AT) ?? 0;
+    if (now - rotatedAt < PREKEY_ROTATION_MS) return;
+
+    const currentSigned = this.store.getMetaNumber(META_SIGNED_PREKEY_ID) ?? 1;
+    const currentKyber = this.store.getMetaNumber(META_KYBER_PREKEY_ID) ?? 1;
+    const nextSigned = currentSigned + 1;
+    const nextKyber = currentKyber + 1;
+    if (nextSigned > MAX_PREKEY_ID || nextKyber > MAX_PREKEY_ID) return;
+
+    // Reserved before the keys exist, for the same reason the one-time
+    // identifiers are: an upload that lands without the counter following it
+    // would have the next rotation overwrite a private key the gateway is
+    // still handing the public half of.
+    this.store.setMetaNumber(META_SIGNED_PREKEY_ID, nextSigned);
+    this.store.setMetaNumber(META_KYBER_PREKEY_ID, nextKyber);
+
+    const signedPreKey = await generateSignedPreKey(this.identity, nextSigned, this.stores);
+    const kyberPreKey = await generateKyberPreKey(this.identity, nextKyber, this.stores);
+    await this.transport.replenishKeys({ signedPreKey, kyberPreKey });
+    this.store.setMetaNumber(META_PREKEYS_ROTATED_AT, now);
+
+    if (currentSigned > 1) this.store.deleteRecord('signed_prekeys', currentSigned - 1);
+    if (currentKyber > 1) this.store.deleteRecord('kyber_prekeys', currentKyber - 1);
+  }
+
   async replenishPreKeys(): Promise<void> {
     try {
       const remaining = await this.transport.remainingOneTimePreKeys();
@@ -515,10 +574,23 @@ export class MillygramClient {
 
       const firstId = this.store.getMetaNumber(META_NEXT_PREKEY_ID) ?? ONE_TIME_PREKEY_BATCH + 1;
       const count = ONE_TIME_PREKEY_BATCH - remaining;
-      const generated = await generateOneTimePreKeys(firstId, count, this.stores);
 
-      await this.transport.replenishKeys({ oneTimePreKeys: generated });
+      // Reserved before the keys exist, not after they are uploaded.
+      //
+      // Advancing afterwards leaves a window: if the upload lands and the
+      // counter write does not — a crash, a killed process — the next
+      // replenishment generates fresh keys under the same identifiers and
+      // overwrites the private halves. The gateway then hands out a public
+      // prekey whose private key is gone, and the session opened with it fails
+      // to decrypt. That failure is indistinguishable from an envelope meant
+      // for someone else, so the message is dropped in silence.
+      //
+      // Burning identifiers costs nothing: they are 24 bits, and a hundred at a
+      // time is a hundred and sixty thousand batches before the space matters.
       this.store.setMetaNumber(META_NEXT_PREKEY_ID, firstId + count);
+
+      const generated = await generateOneTimePreKeys(firstId, count, this.stores);
+      await this.transport.replenishKeys({ oneTimePreKeys: generated });
     } catch (error) {
       if (error instanceof TransportError) return;
       throw error;

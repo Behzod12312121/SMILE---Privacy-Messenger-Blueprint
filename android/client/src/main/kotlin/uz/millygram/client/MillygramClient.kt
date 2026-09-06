@@ -407,7 +407,10 @@ class MillygramClient private constructor(
             }
 
             override fun onCaughtUp() {
-                submitWork { runCatching { replenishPreKeys() } }
+                submitWork {
+                    runCatching { replenishPreKeys() }
+                    runCatching { rotatePreKeys() }
+                }
             }
 
             // The socket does not come back on its own, and the transport
@@ -461,6 +464,51 @@ class MillygramClient private constructor(
 
     /* ---- prekey replenishment ---- */
 
+    /**
+     * Replaces the signed and Kyber prekeys once they are old enough.
+     *
+     * The gateway has always accepted these — the replenish request has fields
+     * for both and verifies their signatures — but nothing ever sent them, so
+     * a pair generated at registration was served for the life of the account.
+     * See Protocol.PREKEY_ROTATION_MS for what that costs.
+     *
+     * The key being replaced is kept. Someone may have fetched a bundle moments
+     * before this ran, and the session they open names the old key; deleting it
+     * at once would make that first message undecryptable, and an undecryptable
+     * message is dropped in silence here by design. The one before it goes, so
+     * exactly two generations are ever held.
+     */
+    fun rotatePreKeys(now: Long = System.currentTimeMillis()) {
+        val rotatedAt = store.getMetaLong(META_PREKEYS_ROTATED_AT) ?: 0L
+        if (now - rotatedAt < Protocol.PREKEY_ROTATION_MS) return
+
+        val currentSigned = store.getMetaLong(META_SIGNED_PREKEY_ID)?.toInt() ?: 1
+        val currentKyber = store.getMetaLong(META_KYBER_PREKEY_ID)?.toInt() ?: 1
+        val nextSigned = currentSigned + 1
+        val nextKyber = currentKyber + 1
+        if (nextSigned > Protocol.MAX_PREKEY_ID || nextKyber > Protocol.MAX_PREKEY_ID) return
+
+        // Reserved before the keys exist, for the same reason the one-time
+        // identifiers are: an upload that lands without the counter following
+        // it would have the next rotation overwrite a private key the gateway
+        // is still handing the public half of.
+        store.setMetaLong(META_SIGNED_PREKEY_ID, nextSigned.toLong())
+        store.setMetaLong(META_KYBER_PREKEY_ID, nextKyber.toLong())
+
+        val signed = Keys.generateSignedPreKey(identity, nextSigned, stores)
+        val kyber = Keys.generateKyberPreKey(identity, nextKyber, stores)
+        transport.replenishKeys(
+            JSONObject().apply {
+                put("signedPreKey", signed.toJson())
+                put("kyberPreKey", kyber.toJson())
+            },
+        )
+        store.setMetaLong(META_PREKEYS_ROTATED_AT, now)
+
+        if (currentSigned > 1) store.deleteRecord("signed_prekeys", (currentSigned - 1).toLong())
+        if (currentKyber > 1) store.deleteRecord("kyber_prekeys", (currentKyber - 1).toLong())
+    }
+
     fun replenishPreKeys() {
         val remaining = try {
             transport.remainingOneTimePreKeys()
@@ -471,10 +519,23 @@ class MillygramClient private constructor(
 
         val firstId = store.getMetaLong(META_NEXT_PREKEY_ID)?.toInt() ?: (Protocol.ONE_TIME_PREKEY_BATCH + 1)
         val count = Protocol.ONE_TIME_PREKEY_BATCH - remaining
-        val generated = Keys.generateOneTimePreKeys(firstId, count, stores)
 
-        transport.replenishKeys(JSONObject().apply { put("oneTimePreKeys", generated.toJsonArray()) })
+        // Reserved before the keys exist, not after they are uploaded.
+        //
+        // Advancing afterwards leaves a window: if the upload lands and the
+        // counter write does not — a crash, a process killed for memory — the
+        // next replenishment generates fresh keys under the same identifiers
+        // and overwrites the private halves. The gateway then hands out a
+        // public prekey whose private key is gone, and the session opened with
+        // it fails to decrypt. That failure looks exactly like an envelope
+        // meant for another member of the bucket, so it is dropped in silence.
+        //
+        // Burning identifiers costs nothing: they are 24 bits, and a hundred at
+        // a time is a hundred and sixty thousand batches before it matters.
         store.setMetaLong(META_NEXT_PREKEY_ID, (firstId + count).toLong())
+
+        val generated = Keys.generateOneTimePreKeys(firstId, count, stores)
+        transport.replenishKeys(JSONObject().apply { put("oneTimePreKeys", generated.toJsonArray()) })
     }
 
     /* ---- internals ---- */
@@ -494,6 +555,9 @@ class MillygramClient private constructor(
         private const val META_SENDER_CERT = "senderCert"
         private const val META_SENDER_CERT_EXPIRY = "senderCertExpiresAt"
         private const val META_NEXT_PREKEY_ID = "nextPreKeyId"
+        private const val META_SIGNED_PREKEY_ID = "signedPreKeyId"
+        private const val META_KYBER_PREKEY_ID = "kyberPreKeyId"
+        private const val META_PREKEYS_ROTATED_AT = "preKeysRotatedAt"
         private const val META_CURSOR = "bucketCursor"
 
         private fun peerBucketMeta(aci: String): String = "peerBucket:$aci"
@@ -529,6 +593,12 @@ class MillygramClient private constructor(
             val kyberPreKey = Keys.generateKyberPreKey(identity, 1, stores)
             val oneTimePreKeys = Keys.generateOneTimePreKeys(1, Protocol.ONE_TIME_PREKEY_BATCH, stores)
             store.setMetaLong(META_NEXT_PREKEY_ID, (Protocol.ONE_TIME_PREKEY_BATCH + 1).toLong())
+            store.setMetaLong(META_SIGNED_PREKEY_ID, 1)
+            store.setMetaLong(META_KYBER_PREKEY_ID, 1)
+            // Generated a moment ago, so the rotation clock starts now rather
+            // than at zero — otherwise every new account rotates on its first
+            // connection and throws away keys nobody has used.
+            store.setMetaLong(META_PREKEYS_ROTATED_AT, System.currentTimeMillis())
 
             val timestamp = System.currentTimeMillis()
             val signPayload = Protocol.registrationSigningPayload(

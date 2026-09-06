@@ -57,6 +57,22 @@ object Protocol {
     const val OBLIVIOUS_REQUEST_BYTES: Int = 8 + PADDED_ENVELOPE_BYTES
     const val ONE_TIME_PREKEY_BATCH: Int = 100
     const val ONE_TIME_PREKEY_LOW_WATER: Int = 20
+
+    /** The largest prekey identifier the wire format carries. */
+    const val MAX_PREKEY_ID: Int = 0xffffff
+
+    /**
+     * How long a signed or Kyber prekey stays current before a new one replaces
+     * it.
+     *
+     * These are the medium-term half of PQXDH, and medium-term only means
+     * anything if they are actually replaced. Left alone they become long-term
+     * keys, and the private half on a seized handset then opens the first
+     * message of every conversation ever started with that account rather than
+     * only those begun since the last rotation. The ratchet protects everything
+     * after the first message; this bounds the first.
+     */
+    const val PREKEY_ROTATION_MS: Long = 48L * 60 * 60 * 1000
     const val DEFAULT_BUCKET_SIZE: Int = 16
 
     /** JavaScript Number.MAX_SAFE_INTEGER. Both implementations stop here. */

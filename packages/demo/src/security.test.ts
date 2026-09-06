@@ -39,6 +39,7 @@ import {
   decodeObliviousRequest,
   encodeObliviousRequest,
   pad,
+  PREKEY_ROTATION_MS,
   registrationSigningPayload,
   solveRegistrationWork,
   solveProofOfWork,
@@ -165,6 +166,64 @@ const submit = (body: unknown): Promise<Response> =>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+describe('medium-term keys are actually medium-term', () => {
+  test('rotation replaces the published pair and keeps the previous one usable', async () => {
+    const owner = await register('rotator');
+    const early = await register('earlybird');
+    const late = await register('latecomer');
+
+    const bundleFor = async (client: MillygramClient, target: string) => {
+      const token = await (client as unknown as { transport: { accessToken(): Promise<string> } })
+        .transport.accessToken();
+      const response = await fetch(`${server.url}/v1/keys/${target}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      return (await response.json()) as {
+        signedPreKey: { keyId: number };
+        kyberPreKey: { keyId: number };
+      };
+    };
+
+    const before = await bundleFor(early, owner.aci);
+
+    // Someone fetches a bundle and starts writing, but their message has not
+    // arrived yet when the rotation happens.
+    await early.send(owner.username, 'sent against the old signed prekey');
+
+    // Far enough in the future that the pair is due for replacement.
+    await owner.rotatePreKeys(Date.now() + PREKEY_ROTATION_MS + 1);
+
+    const after = await bundleFor(late, owner.aci);
+    assert.notEqual(after.signedPreKey.keyId, before.signedPreKey.keyId, 'the signed prekey must change');
+    assert.notEqual(after.kyberPreKey.keyId, before.kyberPreKey.keyId, 'the kyber prekey must change');
+
+    // The in-flight message names the key that has just been replaced. Losing
+    // it here would be silent: an envelope that will not open is exactly what
+    // every other member of the bucket sees.
+    const inbox: IncomingMessage[] = [];
+    await owner.catchUp((message) => {
+      inbox.push(message);
+    });
+    assert.deepEqual(
+      inbox.map((m) => m.body),
+      ['sent against the old signed prekey'],
+      'a session opened just before rotation must still be readable',
+    );
+
+    // And the newly published pair works for someone arriving after it.
+    await late.send(owner.username, 'sent against the new signed prekey');
+    const second: IncomingMessage[] = [];
+    await owner.catchUp((message) => {
+      second.push(message);
+    });
+    assert.deepEqual(second.map((m) => m.body), ['sent against the new signed prekey']);
+
+    owner.close();
+    early.close();
+    late.close();
+  });
+});
 
 describe('limiter state cannot be grown by a stranger', () => {
   test('a bundle request for an account that does not exist charges nothing', async () => {

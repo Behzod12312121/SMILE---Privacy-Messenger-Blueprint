@@ -33,6 +33,21 @@ export const ONE_TIME_PREKEY_BATCH = 100;
 export const ONE_TIME_PREKEY_LOW_WATER = 20;
 
 /**
+ * How long a signed or Kyber prekey stays current before a new one replaces it.
+ *
+ * These are the medium-term half of PQXDH, and medium-term only means anything
+ * if they are actually replaced. Left alone they become long-term keys, and the
+ * private half sitting on a seized handset then opens the first message of
+ * every conversation ever started with that account, rather than only those
+ * begun since the last rotation. The ratchet protects everything after the
+ * first message; this bounds the first.
+ *
+ * Two days, matching what Signal does, and the previous key is kept for one
+ * further interval so bundles already handed out still open.
+ */
+export const PREKEY_ROTATION_MS = 48 * 60 * 60 * 1000;
+
+/**
  * Every envelope is padded to exactly this size, after encryption rather than
  * before. Padding the plaintext is not enough: the ciphertext also grows and
  * shrinks with ratchet state, so envelopes stayed distinguishable by length
@@ -316,7 +331,9 @@ const b64url = (label: string, maxBytes: number) =>
 export const Username = z.string().regex(USERNAME_RE, 'username must be 3-32 chars of [a-z0-9_]');
 export const Aci = z.uuid();
 export const DeviceId = z.number().int().min(1).max(127);
-export const KeyId = z.number().int().min(1).max(0xffffff);
+/** The largest prekey identifier the wire format carries. */
+export const MAX_PREKEY_ID = 0xffffff;
+export const KeyId = z.number().int().min(1).max(MAX_PREKEY_ID);
 export const RegistrationId = z.number().int().min(1).max(0x3fff);
 export const BucketId = z.number().int().min(0).max(0xffffffff);
 

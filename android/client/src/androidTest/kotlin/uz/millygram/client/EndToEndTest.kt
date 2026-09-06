@@ -249,6 +249,36 @@ class EndToEndTest {
     }
 
     @Test
+    fun rotatingPreKeysKeepsTheReplacedOneUsable() {
+        val owner = register("rotowner")
+        val early = register("rotearly")
+        val late = register("rotlate")
+
+        // Someone fetches a bundle and writes, but the message has not been
+        // collected when the rotation happens.
+        early.send(owner.username, "eski kalit bilan yuborildi")
+
+        owner.rotatePreKeys(System.currentTimeMillis() + Protocol.PREKEY_ROTATION_MS + 1)
+
+        // The in-flight session names the key that was just replaced. Losing it
+        // would be silent: an envelope that will not open is exactly what every
+        // other member of the bucket sees.
+        val first = mutableListOf<String>()
+        owner.catchUp { first += it.body }
+        assertEquals(
+            "a session opened before rotation must still be readable",
+            listOf("eski kalit bilan yuborildi"),
+            first,
+        )
+
+        // And the newly published pair works for someone arriving after it.
+        late.send(owner.username, "yangi kalit bilan yuborildi")
+        val second = mutableListOf<String>()
+        owner.catchUp { second += it.body }
+        assertEquals(listOf("yangi kalit bilan yuborildi"), second)
+    }
+
+    @Test
     fun bothSidesComputeTheSameSafetyNumber() {
         val alisher = register("safetya")
         val nodira = register("safetyb")
