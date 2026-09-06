@@ -1,3 +1,4 @@
+import { Fingerprint, PrivateKey } from '@signalapp/libsignal-client';
 import { createCipheriv } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -11,6 +12,7 @@ import {
   SIG_REGISTER,
   authSigningPayload,
   b64,
+  bytes,
   canonical,
   decodeObliviousRequest,
   encodeObliviousRequest,
@@ -79,6 +81,25 @@ const vaultCipher = createCipheriv('aes-256-gcm', vaultKey, vaultNonce, { authTa
 vaultCipher.setAAD(vaultAad);
 const vaultBody = Buffer.concat([vaultCipher.update(vaultPlaintext), vaultCipher.final()]);
 const vaultSealed = Buffer.concat([vaultNonce, vaultBody, vaultCipher.getAuthTag()]);
+
+// The number two people read to each other to check nobody is in the middle.
+// Both clients must derive the same digits from the same pair of identities,
+// and nothing was checking that they did — a mismatch would have two honest
+// people concluding they were under attack.
+const fpLocalAci = '11111111-1111-4111-8111-111111111111';
+const fpRemoteAci = '22222222-2222-4222-8222-222222222222';
+const fpLocalKey = PrivateKey.deserialize(bytes(patterned(32, 19))).getPublicKey();
+const fpRemoteKey = PrivateKey.deserialize(bytes(patterned(32, 23))).getPublicKey();
+const fingerprint = Fingerprint.new(
+  5200,
+  2,
+  bytes(Buffer.from(fpLocalAci, 'utf8')),
+  fpLocalKey,
+  bytes(Buffer.from(fpRemoteAci, 'utf8')),
+  fpRemoteKey,
+)
+  .displayableFingerprint()
+  .toString();
 
 const powContent = patterned(PADDED_ENVELOPE_BYTES, 9);
 const powBucket = 7;
@@ -174,6 +195,13 @@ const vectors = {
     validNonce: powNonce,
     invalidNonce: powBadNonce,
   },
+  safetyNumber: {
+    localAci: fpLocalAci,
+    remoteAci: fpRemoteAci,
+    localIdentityHex: hex(fpLocalKey.serialize()),
+    remoteIdentityHex: hex(fpRemoteKey.serialize()),
+    digits: fingerprint,
+  },
   vault: {
     keyHex: hex(vaultKey),
     aad: vaultAad.toString('utf8'),
@@ -213,6 +241,15 @@ writeFileSync(target, `${JSON.stringify(vectors, null, 2)}\n`, 'utf8');
 const libsignalVersion = createRequire(import.meta.url)(
   '@signalapp/libsignal-client/package.json',
 ).version as string;
+
+// The client module's tests need the vectors too — the safety number needs
+// libsignal's natives, which the protocol module does not depend on. Written
+// from here rather than copied, so the two cannot drift.
+const clientVectors = resolve('android/client/src/test/resources/vectors.json');
+mkdirSync(dirname(clientVectors), { recursive: true });
+writeFileSync(clientVectors, `${JSON.stringify(vectors, null, 2)}
+`, 'utf8');
+console.log(`wrote ${clientVectors}`);
 
 const versionTarget = resolve('android/client/src/test/resources/gateway-libsignal-version.txt');
 mkdirSync(dirname(versionTarget), { recursive: true });
