@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Staging overlay. Identical to the release policy — cleartext refused, only
+  the system CA store trusted — except that a gateway on the developer's
+  machine may be reached over http at localhost. That is the single difference
+  between this build and the shipping one, and it exists so the minified build
+  can be exercised at all.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

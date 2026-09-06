@@ -74,6 +74,28 @@ android {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+
+        /**
+         * Release, made testable.
+         *
+         * The shipping build is minified, and the keep rules that stop R8
+         * removing libsignal's reflectively-reached classes had never been
+         * exercised against a running app — release refuses cleartext, so every
+         * end-to-end run had been against the unminified debug build. That left
+         * the one failure mode the rules exist to prevent completely untested,
+         * and it is the mode that only appears in the build users install.
+         *
+         * This is release's minification and rules, pointed at a development
+         * gateway so it can actually be driven. It is signed with the debug key
+         * and must never be published.
+         */
+        create("staging") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            signingConfig = signingConfigs.getByName("debug")
+            endpoints("http://localhost:8443", "http://localhost:8444")
+                .forEach { (name, value) -> buildConfigField("String", name, "\"$value\"") }
+        }
     }
 
     // libsignal ships one ~110 MB native library per ABI, plus a *testing*
