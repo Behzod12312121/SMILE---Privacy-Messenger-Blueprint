@@ -270,6 +270,23 @@ class MillygramClient private constructor(
     )
 
     /**
+     * Writes the account out to a blob the user can keep somewhere else.
+     *
+     * Everything is in it — the identity key, the sessions, the pinned keys of
+     * every contact and the message history — because a restore that produced
+     * a different identity would change the safety number of every
+     * conversation, which is the alarm this app rings when someone is being
+     * impersonated. A backup that cried wolf on every restore would teach
+     * people to ignore it.
+     *
+     * That completeness is also the danger, and it is the reason this is
+     * something a user chooses rather than something that happens: whoever
+     * holds the file and its passphrase is the account, and can be that account
+     * without any contact noticing.
+     */
+    fun exportBackup(passphrase: String): ByteArray = exclusive { store.exportBackup(passphrase) }
+
+    /**
      * Forgets everything pinned about a contact: the session and the identity
      * key.
      *
@@ -676,6 +693,14 @@ class MillygramClient private constructor(
                 registered.bucketId, registered.powDifficulty, trustRootKey,
             )
         }
+
+        /** Rebuilds a vault from a backup blob. See exportBackup. */
+        fun restoreBackup(
+            context: android.content.Context,
+            databaseName: String,
+            backup: ByteArray,
+            passphrase: String,
+        ) = LocalStore.importBackup(context, databaseName, backup, passphrase)
 
         fun open(options: MillygramOptions): MillygramClient {
             val store = LocalStore.open(options.context, options.databaseName, options.passphrase)

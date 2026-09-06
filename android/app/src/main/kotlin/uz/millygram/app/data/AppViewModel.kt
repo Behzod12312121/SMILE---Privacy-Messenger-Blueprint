@@ -94,6 +94,46 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Rebuilds an account from a backup file and opens it.
+     *
+     * The passphrase is the one the backup was written with, and becomes the
+     * passphrase of the restored account — two would be two things to lose.
+     */
+    fun restore(backup: ByteArray, passphrase: String, server: String, relay: String) {
+        serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
+        relayUrl = relay.trim()
+        _state.value = State.Working("Tiklanmoqda…")
+
+        viewModelScope.launch {
+            runCatching {
+                MillygramSession.restore(
+                    getApplication(),
+                    backup,
+                    passphrase,
+                    serverUrl,
+                    relayUrl.ifEmpty { null },
+                )
+            }.onSuccess { session ->
+                adopt(session)
+                _state.value = State.Ready(session)
+            }.onFailure { failure ->
+                _state.value = State.Failed(describeRestore(failure), State.NeedsAccount)
+            }
+        }
+    }
+
+    private fun describeRestore(failure: Throwable): String {
+        val message = failure.message.orEmpty()
+        return when {
+            "wrong passphrase" in message -> "Parol notoʻgʻri"
+            "already holds an account" in message ->
+                "Bu qurilmada allaqachon hisob bor. Avval uni oʻchiring"
+            "not a MillyGram backup" in message -> "Bu MillyGram zaxira fayli emas"
+            else -> describe(failure)
+        }
+    }
+
     fun unlock(passphrase: String, server: String, relay: String) {
         serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
         relayUrl = relay.trim()

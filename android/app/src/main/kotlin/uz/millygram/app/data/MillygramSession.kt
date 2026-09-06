@@ -170,6 +170,11 @@ class MillygramSession private constructor(
      * again, and clears the warning. Dismissing the warning without this leaves
      * the conversation silently broken, so the two belong together.
      */
+    /** See MillygramClient.exportBackup. */
+    suspend fun exportBackup(passphrase: String): ByteArray = withContext(Dispatchers.IO) {
+        client.exportBackup(passphrase)
+    }
+
     /** What notifications are allowed to say. Persisted, so it survives a restart. */
     var notificationDetail: NotificationDetail
         get() = NotificationDetail.parse(client.getAppData(NOTIFY_DETAIL))
@@ -439,6 +444,26 @@ class MillygramSession private constructor(
         private const val MIN_BACKOFF_MS = 1_000L
         private const val MAX_BACKOFF_MS = 30_000L
         private const val DATABASE = "millygram.db"
+
+        /**
+         * Rebuilds an account from a backup, then opens it.
+         *
+         * The old handset must not keep running afterwards. Both would hold the
+         * same sessions and the ratchet would advance in two places at once,
+         * which breaks the conversation for whichever message loses the race —
+         * silently, since a message that will not decrypt is dropped the same
+         * way as one meant for somebody else.
+         */
+        suspend fun restore(
+            context: Context,
+            backup: ByteArray,
+            passphrase: String,
+            serverUrl: String,
+            obliviousRelayUrl: String? = null,
+        ): MillygramSession = withContext(Dispatchers.IO) {
+            MillygramClient.restoreBackup(context, DATABASE, backup, passphrase)
+            open(context, passphrase, serverUrl, obliviousRelayUrl)
+        }
 
         fun exists(context: Context): Boolean =
             context.getDatabasePath(DATABASE).let(File::exists)

@@ -49,6 +49,7 @@ fun SettingsScreen(
     onToggleScreenLock: (Boolean) -> Unit,
     onCycleNotificationDetail: () -> Unit = {},
     onLock: () -> Unit = {},
+    onBackup: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -157,6 +158,17 @@ fun SettingsScreen(
                 label = "Ekran qulfi",
                 leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
                 trailing = { MillyToggle(account.screenLock, onToggleScreenLock) },
+            )
+        }
+
+        Spacer(Modifier.padding(top = Space.xl))
+        Card {
+            SettingsRow(
+                label = "Zaxira nusxa",
+                value = "Faylga saqlash",
+                leading = { KeyGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onBackup,
             )
         }
 

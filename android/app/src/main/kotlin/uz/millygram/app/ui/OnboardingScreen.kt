@@ -62,6 +62,10 @@ fun OnboardingScreen(
     onRegister: (username: String, passphrase: String, server: String, relay: String) -> Unit,
     onUnlock: (passphrase: String, server: String, relay: String) -> Unit,
     onDismissError: () -> Unit,
+    /** Offered only on a device with no account, since a restore refuses to overwrite one. */
+    onRestore: ((passphrase: String, server: String, relay: String) -> Unit)? = null,
+    restoreFileChosen: Boolean = false,
+    onChooseRestoreFile: () -> Unit = {},
 ) {
     var username by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
@@ -199,6 +203,31 @@ fun OnboardingScreen(
                 style = MillyType.Label,
                 color = if (ready) theme.onAccent else theme.textTertiary,
             )
+        }
+
+        if (creating && onRestore != null) {
+            Spacer(Modifier.height(Space.lg))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (restoreFileChosen) "Zaxiradan tiklash" else "Zaxira faylidan tiklash",
+                    style = MillyType.Meta,
+                    color = theme.accent,
+                    modifier = Modifier.clickable {
+                        if (restoreFileChosen) onRestore(passphrase, server, relay) else onChooseRestoreFile()
+                    },
+                )
+            }
+            if (restoreFileChosen) {
+                Spacer(Modifier.height(Space.sm))
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "Fayl tanlandi. Zaxira parolini kiriting va yuqoridagi havolani bosing.",
+                        style = MillyType.Timestamp,
+                        color = theme.textTertiary,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(Space.xxl))

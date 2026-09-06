@@ -44,6 +44,10 @@ import uz.millygram.app.data.NotificationDetail
 import uz.millygram.app.theme.MillyGramTheme
 import uz.millygram.app.theme.MillyType
 import uz.millygram.app.theme.theme
+import androidx.activity.compose.rememberLauncherForActivityResult
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import uz.millygram.app.ui.BackupScreen
 import uz.millygram.app.ui.ChatListScreen
 import uz.millygram.app.ui.Contact
 import uz.millygram.app.ui.Conversation
@@ -130,6 +134,7 @@ private object Route {
     const val NEW_CHAT = "new-chat"
     const val SETTINGS = "settings"
     const val SAFETY_NUMBER = "safety/{aci}"
+    const val BACKUP = "backup"
 
     fun conversation(aci: String) = "conversation/$aci"
     fun safety(aci: String) = "safety/$aci"
@@ -153,8 +158,29 @@ private fun MillyGramApp(
                 is AppViewModel.State.Failed -> current.previous is AppViewModel.State.NeedsAccount
                 else -> current is AppViewModel.State.NeedsAccount
             }
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val scope = rememberCoroutineScope()
+            var chosen by remember { mutableStateOf<ByteArray?>(null) }
+            val pick = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                scope.launch {
+                    chosen = runCatching {
+                        withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        }
+                    }.getOrNull()
+                }
+            }
+
             OnboardingScreen(
                 creating = creating,
+                onRestore = { passphrase, server, relay ->
+                    chosen?.let { model.restore(it, passphrase, server, relay) }
+                },
+                restoreFileChosen = chosen != null,
+                onChooseRestoreFile = { pick.launch(arrayOf("*/*")) },
                 busy = (current as? AppViewModel.State.Working)?.what,
                 error = (current as? AppViewModel.State.Failed)?.message,
                 defaultServer = model.serverUrl,
@@ -270,6 +296,7 @@ private fun SignedIn(
                     screenLock = it
                     onScreenSecurityChanged(it)
                 },
+                onBackup = { navController.navigate(Route.BACKUP) },
                 onLock = {
                     navController.popBackStack(Route.CHATS, inclusive = false)
                     model.lock()
@@ -279,6 +306,52 @@ private fun SignedIn(
                     val next = order[(order.indexOf(session.notificationDetail) + 1) % order.size]
                     session.notificationDetail = next
                     notificationDetail = next
+                },
+            )
+        }
+
+        composable(Route.BACKUP) {
+            var busy by remember { mutableStateOf(false) }
+            var failure by remember { mutableStateOf<String?>(null) }
+            var pending by remember { mutableStateOf<String?>(null) }
+
+            // The user picks where it goes. Nothing is written anywhere until
+            // they have, and nothing is uploaded at all.
+            val save = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/octet-stream"),
+            ) { uri ->
+                val passphrase = pending
+                pending = null
+                if (uri == null || passphrase == null) {
+                    busy = false
+                    return@rememberLauncherForActivityResult
+                }
+                scope.launch {
+                    runCatching {
+                        val blob = session.exportBackup(passphrase)
+                        withContext(Dispatchers.IO) {
+                            context.contentResolver.openOutputStream(uri)?.use { it.write(blob) }
+                                ?: error("cannot write there")
+                        }
+                    }.onSuccess {
+                        busy = false
+                        navController.popBackStack()
+                    }.onFailure {
+                        busy = false
+                        failure = "Saqlab boʻlmadi"
+                    }
+                }
+            }
+
+            BackupScreen(
+                onBack = { navController.popBackStack() },
+                busy = busy,
+                error = failure,
+                onSave = { passphrase ->
+                    failure = null
+                    busy = true
+                    pending = passphrase
+                    save.launch("millygram-${session.username}.backup")
                 },
             )
         }

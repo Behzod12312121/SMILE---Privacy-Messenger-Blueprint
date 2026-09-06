@@ -4,6 +4,8 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.io.Closeable
+import org.json.JSONArray
+import org.json.JSONObject
 import uz.millygram.protocol.Vault
 
 /**
@@ -113,8 +115,132 @@ class LocalStore private constructor(
         )
     }
 
+    /**
+     * Writes the whole vault out under a passphrase of the user's choosing.
+     *
+     * The sealed values are copied exactly as they are stored. Each one is
+     * bound by its associated data to the table and row it belongs to, and the
+     * backup preserves both, so nothing has to be decrypted to move it and a
+     * value cannot be replanted somewhere else on the way back in. What the
+     * passphrase protects is the data key; everything else is already
+     * unreadable without it.
+     */
+    fun exportBackup(passphrase: String): ByteArray {
+        val salt = Vault.randomSalt()
+        val params = Vault.KdfParameters()
+        val kek = Vault.deriveKey(passphrase, salt, params)
+        val wrapped = Vault.seal(kek, Vault.aad("vault", "dek"), dek)
+        kek.fill(0)
+
+        val rows = JSONArray()
+        for (table in ALLOWED_TABLES) {
+            val idColumn = idColumnFor(table)
+            val valueColumn = valueColumnFor(table)
+            db.query(table, arrayOf(idColumn, valueColumn), null, null, null, null, null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    rows.put(
+                        JSONObject().apply {
+                            put("table", table)
+                            put("id", cursor.getString(0))
+                            put("value", android.util.Base64.encodeToString(cursor.getBlob(1), BASE64))
+                        },
+                    )
+                }
+            }
+        }
+
+        return JSONObject().apply {
+            put("format", BACKUP_FORMAT)
+            put("kdfN", params.n)
+            put("kdfR", params.r)
+            put("kdfP", params.p)
+            put("salt", android.util.Base64.encodeToString(salt, BASE64))
+            put("wrappedKey", android.util.Base64.encodeToString(wrapped, BASE64))
+            put("rows", rows)
+        }.toString().toByteArray(Charsets.UTF_8)
+    }
+
     companion object {
         private const val SCHEMA_VERSION = 1
+        private const val BACKUP_FORMAT = "millygram-backup-v1"
+        private const val BASE64 = android.util.Base64.NO_WRAP
+
+        private fun idColumnFor(table: String): String = when (table) {
+            "meta" -> "key"
+            "sessions", "identities" -> "address"
+            else -> "id"
+        }
+
+        private fun valueColumnFor(table: String): String = when (table) {
+            "meta" -> "value"
+            "identities" -> "key"
+            else -> "record"
+        }
+
+        /**
+         * Rebuilds a vault from a backup.
+         *
+         * The passphrase that protected the backup becomes the passphrase of
+         * the restored vault, because carrying two of them around is a way to
+         * lose both. Refuses to write over an account that already exists: a
+         * restore that silently replaced the vault on the handset would be a
+         * very expensive mis-tap.
+         */
+        fun importBackup(context: Context, name: String, backup: ByteArray, passphrase: String) {
+            val parsed = JSONObject(String(backup, Charsets.UTF_8))
+            require(parsed.optString("format") == BACKUP_FORMAT) { "not a MillyGram backup" }
+
+            val salt = android.util.Base64.decode(parsed.getString("salt"), BASE64)
+            val wrapped = android.util.Base64.decode(parsed.getString("wrappedKey"), BASE64)
+            val params = Vault.KdfParameters(
+                n = parsed.getInt("kdfN"),
+                r = parsed.getInt("kdfR"),
+                p = parsed.getInt("kdfP"),
+            )
+
+            // Checked before anything is written, so a wrong passphrase costs
+            // nothing but the derivation.
+            val kek = Vault.deriveKey(passphrase, salt, params)
+            try {
+                Vault.open(kek, Vault.aad("vault", "dek"), wrapped)
+            } catch (t: Throwable) {
+                throw IllegalStateException("wrong passphrase for this backup", t)
+            } finally {
+                kek.fill(0)
+            }
+
+            require(!context.getDatabasePath(name).exists()) {
+                "this device already holds an account; remove it before restoring"
+            }
+
+            val helper = OpenHelper(context.applicationContext, name)
+            helper.setWriteAheadLoggingEnabled(true)
+            val db = helper.writableDatabase
+            db.beginTransaction()
+            try {
+                db.execSQL(
+                    "INSERT INTO vault (id, kdf_salt, wrapped_key, kdf_n, kdf_r, kdf_p) VALUES (1, ?, ?, ?, ?, ?)",
+                    arrayOf<Any>(salt, wrapped, params.n, params.r, params.p),
+                )
+                val rows = parsed.getJSONArray("rows")
+                for (index in 0 until rows.length()) {
+                    val row = rows.getJSONObject(index)
+                    val table = row.getString("table")
+                    require(table in ALLOWED_TABLES) { "unknown table in backup: $table" }
+                    db.execSQL(
+                        "INSERT INTO $table (${idColumnFor(table)}, ${valueColumnFor(table)}) VALUES (?, ?)",
+                        arrayOf<Any>(
+                            row.getString("id"),
+                            android.util.Base64.decode(row.getString("value"), BASE64),
+                        ),
+                    )
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+                db.close()
+            }
+        }
 
         private val ALLOWED_TABLES = setOf(
             "meta", "sessions", "identities", "prekeys", "signed_prekeys", "kyber_prekeys",
