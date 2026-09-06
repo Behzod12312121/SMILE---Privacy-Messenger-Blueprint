@@ -77,31 +77,37 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
 
   const limits = config.rateLimits;
-  const registrationLimiter = new RateLimiter(limits.registration.capacity, limits.registration.refillPerSecond);
-  const authLimiter = new RateLimiter(limits.auth.capacity, limits.auth.refillPerSecond);
-  const authPerAccountLimiter = new RateLimiter(
+  /**
+   * Every limiter, so the sweep cannot miss one.
+   *
+   * It already had: this list was written by hand and a seventh limiter was
+   * added without being added here, so its buckets were never dropped — one
+   * entry per account that ever authenticated, held forever. Collecting them
+   * at the point of construction makes that impossible rather than merely
+   * unlikely.
+   */
+  const allLimiters: RateLimiter[] = [];
+  const track = <T extends RateLimiter>(limiter: T): T => {
+    allLimiters.push(limiter);
+    return limiter;
+  };
+
+  const registrationLimiter = track(new RateLimiter(limits.registration.capacity, limits.registration.refillPerSecond));
+  const authLimiter = track(new RateLimiter(limits.auth.capacity, limits.auth.refillPerSecond));
+  const authPerAccountLimiter = track(new RateLimiter(
     limits.authPerAccount.capacity,
     limits.authPerAccount.refillPerSecond,
-  );
-  const directoryLimiter = new RateLimiter(limits.directory.capacity, limits.directory.refillPerSecond);
-  const inboundLimiter = new RateLimiter(limits.inbound.capacity, limits.inbound.refillPerSecond);
-  const bundlePerCaller = new RateLimiter(
+  ));
+  const directoryLimiter = track(new RateLimiter(limits.directory.capacity, limits.directory.refillPerSecond));
+  const inboundLimiter = track(new RateLimiter(limits.inbound.capacity, limits.inbound.refillPerSecond));
+  const bundlePerCaller = track(new RateLimiter(
     limits.preKeyBundlePerCaller.capacity,
     limits.preKeyBundlePerCaller.refillPerSecond,
-  );
-  const bundlePerTarget = new RateLimiter(
+  ));
+  const bundlePerTarget = track(new RateLimiter(
     limits.preKeyBundlePerTarget.capacity,
     limits.preKeyBundlePerTarget.refillPerSecond,
-  );
-
-  const allLimiters = [
-    registrationLimiter,
-    authLimiter,
-    directoryLimiter,
-    inboundLimiter,
-    bundlePerCaller,
-    bundlePerTarget,
-  ];
+  ));
 
   const sweep = setInterval(() => {
     for (const limiter of allLimiters) limiter.sweep();
@@ -247,6 +253,17 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const parsed = z.object({ aci: z.uuid() }).safeParse(request.params);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' });
 
+    // Looked up before anything is charged, because the limiters keep a bucket
+    // per key and one of those keys is a caller/target pair. Charging first
+    // meant a request for an account that does not exist still created two
+    // buckets, each held for the best part of an hour, and neither of them
+    // throttling anything: a fresh key starts full, so a caller naming a new
+    // random identifier every time was never refused. That is unbounded memory
+    // for the cost of a 404. Identifiers are not guessable, so refusing unknown
+    // ones before charging closes it.
+    const account = store.accountByAci(parsed.data.aci);
+    if (!account) return reply.code(404).send({ error: 'not_found' });
+
     // Serving a bundle consumes one of the target's one-time prekeys. Both
     // limits matter: the per-caller one stops a single account draining a
     // victim, and the per-target one stops the same drain from a fleet of
@@ -258,9 +275,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!bundlePerTarget.tryConsume(parsed.data.aci)) {
       return reply.code(429).send({ error: 'slow_down' });
     }
-
-    const account = store.accountByAci(parsed.data.aci);
-    if (!account) return reply.code(404).send({ error: 'not_found' });
 
     const signed = store.signedPreKey(account.aci);
     const kyber = store.kyberPreKey(account.aci);

@@ -166,6 +166,38 @@ const submit = (body: unknown): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
+describe('limiter state cannot be grown by a stranger', () => {
+  test('a bundle request for an account that does not exist charges nothing', async () => {
+    const caller = await register('ghostcaller');
+    const token = await (caller as unknown as { transport: { accessToken(): Promise<string> } })
+      .transport.accessToken();
+
+    // The same non-existent target, more times than the per-caller allowance.
+    // The limiters keep a bucket per key and one key is a caller/target pair,
+    // so charging before the lookup meant every request for a made-up target
+    // created buckets that never throttled — a fresh key starts full — and
+    // were held for the best part of an hour. Unbounded memory for the cost of
+    // a 404.
+    const ghost = '00000000-0000-4000-8000-0000000000ff';
+    const seen = new Set<number>();
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const response = await fetch(`${server.url}/v1/keys/${ghost}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      seen.add(response.status);
+      await response.arrayBuffer();
+    }
+
+    assert.deepEqual(
+      [...seen],
+      [404],
+      'an unknown target must always be a plain 404, never a throttle, because nothing was charged',
+    );
+
+    caller.close();
+  });
+});
+
 describe('malformed input is refused, not crashed on', () => {
   // "AAAAA" is five base64url characters, which no byte string encodes to.
   // "!!!!" is the right length and the wrong alphabet. Both reach the decoder
