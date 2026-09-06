@@ -11,6 +11,7 @@ import {
   Username,
   b64,
   decodeObliviousRequest,
+  OBLIVIOUS_SEALED_BYTES,
   registrationSigningPayload,
   verifyRegistrationWork,
   unb64,
@@ -100,6 +101,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   ));
   const directoryLimiter = track(new RateLimiter(limits.directory.capacity, limits.directory.refillPerSecond));
   const inboundLimiter = track(new RateLimiter(limits.inbound.capacity, limits.inbound.refillPerSecond));
+  const obliviousLimiter = track(
+    new RateLimiter(limits.oblivious.capacity, limits.oblivious.refillPerSecond),
+  );
   const bundlePerCaller = track(new RateLimiter(
     limits.preKeyBundlePerCaller.capacity,
     limits.preKeyBundlePerCaller.refillPerSecond,
@@ -452,6 +456,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.post('/v1/oblivious', async (request, reply) => {
     const sealed = request.body;
     if (!Buffer.isBuffer(sealed)) return reply.code(400).send({ error: 'invalid_request' });
+
+    // Length first, because it is free and the next step is not. A sealed
+    // request is exactly one size, and the proof of work that pays for a
+    // submission is inside the ciphertext — so opening it is the first thing an
+    // unauthenticated caller can make this server do, and it is a key
+    // agreement. Anything that is not a candidate is refused before that.
+    if (sealed.length !== OBLIVIOUS_SEALED_BYTES) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    // And a ceiling on the ones that are the right length, since a caller can
+    // pad rubbish to any size they like. Every other unauthenticated route that
+    // does public-key work has one of these; this route did not, which left the
+    // only unmetered way to spend the gateway's CPU.
+    if (!obliviousLimiter.tryConsume(GLOBAL)) return reply.code(429).send({ error: 'slow_down' });
 
     const plain = identity.openOblivious(sealed);
     if (!plain) return reply.code(400).send({ error: 'undecryptable' });

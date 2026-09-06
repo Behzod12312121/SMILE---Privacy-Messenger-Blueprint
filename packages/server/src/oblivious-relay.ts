@@ -130,8 +130,21 @@ async function forward(
   gatewayUrl: string,
 ): Promise<void> {
   const body = await readBody(request);
-  if (!body || body.length === 0) {
+  // Two different refusals, and they had been sharing a status. Too large is
+  // 413; empty is simply a bad request, and telling a client the opposite sends
+  // it looking for the wrong problem.
+  //
+  // Deliberately no check of the exact expected length here. This component is
+  // run by a different operator from the gateway and forwards opaque bytes on
+  // purpose; teaching it the shape of what it carries would mean every relay
+  // has to be updated in step with a protocol change. The gateway enforces the
+  // size, where the knowledge already lives.
+  if (!body) {
     response.writeHead(413).end();
+    return;
+  }
+  if (body.length === 0) {
+    response.writeHead(400).end();
     return;
   }
 

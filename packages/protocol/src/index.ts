@@ -183,6 +183,20 @@ export function unpad(padded: Uint8Array): Bytes {
  * because the send path has exactly one shape. Fixed offsets cannot be
  * mis-parsed.
  */
+/**
+ * The exact size of a sealed oblivious request: the fixed request layout plus
+ * HPKE's ephemeral key and tag.
+ *
+ * Fixed on purpose. The gateway cannot see the proof of work inside one of
+ * these until it has decrypted it, so decryption is the first thing an
+ * unauthenticated caller can make it do, and it is not cheap. Knowing the
+ * exact length lets anything that is not a candidate be dropped before any key
+ * agreement happens. A test pins this against what sealing actually produces,
+ * so a change in libsignal's overhead fails the build rather than quietly
+ * rejecting every submission in the field.
+ */
+export const OBLIVIOUS_SEALED_BYTES = 8249;
+
 export const OBLIVIOUS_INFO = 'millygram/oblivious/v1';
 export const OBLIVIOUS_REQUEST_BYTES = 8 + PADDED_ENVELOPE_BYTES;
 

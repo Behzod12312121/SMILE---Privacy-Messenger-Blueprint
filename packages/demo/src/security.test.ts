@@ -31,6 +31,7 @@ import {
 import {
   OBLIVIOUS_INFO,
   OBLIVIOUS_REQUEST_BYTES,
+  OBLIVIOUS_SEALED_BYTES,
   PADDED_ENVELOPE_BYTES,
   authSigningPayload,
   b64,
@@ -166,6 +167,34 @@ const submit = (body: unknown): Promise<Response> =>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+describe('an oblivious submission is cheap to refuse', () => {
+  test('the sealed size the gateway expects is the size sealing produces', () => {
+    // Hardcoding a length is only safe while something checks it. If
+    // libsignal's HPKE overhead ever changes, this fails here rather than in
+    // the field, where the gateway would refuse every real submission before
+    // trying to open it.
+    const recipient = PrivateKey.generate().getPublicKey();
+    const sealed = recipient.seal(
+      new Uint8Array(OBLIVIOUS_REQUEST_BYTES),
+      Buffer.from(OBLIVIOUS_INFO, 'utf8'),
+      new Uint8Array(0),
+    );
+    assert.equal(sealed.length, OBLIVIOUS_SEALED_BYTES);
+  });
+
+  test('a wrong-sized body is refused without any key agreement', async () => {
+    for (const size of [1, 64, OBLIVIOUS_SEALED_BYTES - 1, OBLIVIOUS_SEALED_BYTES + 1]) {
+      const response = await fetch(`${server.url}/v1/oblivious`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: new Uint8Array(size),
+      });
+      await response.arrayBuffer();
+      assert.equal(response.status, 400, `a ${size}-byte body must be refused`);
+    }
+  });
+});
 
 describe('medium-term keys are actually medium-term', () => {
   test('rotation replaces the published pair and keeps the previous one usable', async () => {
@@ -1137,12 +1166,18 @@ describe('oblivious submission', () => {
     assert.equal(((await response.json()) as { error: string }).error, 'undecryptable');
   });
 
-  test('the gateway rejects a sealed request of the wrong shape', async () => {
+  test('a sealed request of the wrong shape never reaches the key agreement', async () => {
     const key = (await (await fetch(`${server.url}/v1/oblivious-key`)).json()) as { publicKey: string };
     const gatewayKey = PublicKey.deserialize(unb64(key.publicKey));
 
-    // Correctly sealed and correctly addressed, but not the fixed request layout.
+    // Correctly sealed and correctly addressed, but not the fixed request
+    // layout. Because that layout is one fixed length, a wrong shape is a wrong
+    // length, and a wrong length is refused before anything is decrypted —
+    // which is the point: opening one of these is the first thing an
+    // unauthenticated caller can make the gateway do, and it is a key
+    // agreement.
     const sealed = gatewayKey.seal(bytes(randomBytes(128)), OBLIVIOUS_INFO);
+    assert.notEqual(sealed.length, OBLIVIOUS_SEALED_BYTES);
 
     const response = await fetch(`${server.url}/v1/oblivious`, {
       method: 'POST',
@@ -1151,7 +1186,7 @@ describe('oblivious submission', () => {
     });
 
     assert.equal(response.status, 400);
-    assert.equal(((await response.json()) as { error: string }).error, 'malformed_oblivious_request');
+    assert.equal(((await response.json()) as { error: string }).error, 'invalid_request');
   });
 
   test('the oblivious path enforces proof of work like the direct one', async () => {

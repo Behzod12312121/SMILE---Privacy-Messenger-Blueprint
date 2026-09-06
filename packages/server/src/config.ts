@@ -31,6 +31,12 @@ export interface RateLimits {
   /** Per destination bucket. Never keyed on the sender; see the submit route. */
   inbound: Bucket;
   /**
+   * A ceiling on oblivious submissions for the whole gateway. Opening one is a
+   * key agreement and the work that pays for it is inside the ciphertext, so
+   * this is the only limit that can apply before the expensive part.
+   */
+  oblivious: Bucket;
+  /**
    * Per (caller, target) pair. Each bundle fetch consumes one of the target's
    * one-time prekeys, so an unthrottled caller can drain a victim's pool and
    * force every later session to open from a bundle without one.
@@ -92,6 +98,11 @@ export const DEFAULT_RATE_LIMITS: RateLimits = {
    * conversation volume.
    */
   inbound: { capacity: 60, refillPerSecond: 0.05 },
+
+  // Sized for the whole gateway rather than any caller, since a submission is
+  // anonymous by construction. Generous: real traffic arrives here through
+  // relays, and several of them may front one gateway.
+  oblivious: { capacity: 2000, refillPerSecond: 500 },
 
   preKeyBundlePerCaller: { capacity: 5, refillPerSecond: 1 / 600 },
   preKeyBundlePerTarget: { capacity: 12, refillPerSecond: 1 / 300 },
