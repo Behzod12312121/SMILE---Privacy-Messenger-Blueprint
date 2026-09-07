@@ -124,6 +124,7 @@ class MillygramSession private constructor(
                     }
                     subscription = client.connect(
                         onMessage = { incoming ->
+                            learnName(incoming.senderAci, incoming.senderUsername)
                             record(
                                 peerAci = incoming.senderAci,
                                 body = incoming.body,
@@ -279,12 +280,19 @@ class MillygramSession private constructor(
                 delivery = delivery,
             )
 
-            val updated = existing?.copy(messages = existing.messages + message)
-                ?: ConversationState(
-                    aci = peerAci,
-                    username = contactName(peerAci),
-                    messages = listOf(message),
-                )
+            // The name is taken fresh every time rather than only when the
+            // conversation is created. A handle learned from a later message —
+            // the first one carried none, or the sender was a stranger until
+            // now — would otherwise be stored and never shown, leaving the
+            // conversation labelled with the identifier for good.
+            val updated = existing?.copy(
+                username = contactName(peerAci),
+                messages = existing.messages + message,
+            ) ?: ConversationState(
+                aci = peerAci,
+                username = contactName(peerAci),
+                messages = listOf(message),
+            )
 
             (current.filterNot { it.aci == peerAci } + updated).sortedByDescending {
                 it.messages.lastOrNull()?.sentAt ?: 0
@@ -293,6 +301,25 @@ class MillygramSession private constructor(
         _conversations.value.firstOrNull { it.aci == peerAci }?.let(::persist)
         persistIndex()
         return id
+    }
+
+    /**
+     * Adopts the handle a sender claims, once the directory agrees it is theirs.
+     *
+     * Sealed sender proves which account a message came from; it says nothing
+     * about what that account is called, and the claim rides inside the
+     * ciphertext where anyone could write anything. So it is checked the only
+     * way round that exists — handle to identifier — and a mismatch is simply
+     * ignored, leaving the conversation labelled by identifier as before.
+     * Without this a first message from someone shows eight characters of hex,
+     * which is not a person's name in any language.
+     */
+    private fun learnName(peerAci: String, claimed: String?) {
+        if (claimed == null) return
+        if (client.getAppData("contact:$peerAci") != null) return
+        runCatching {
+            if (client.resolveUsername(claimed).aci == peerAci) rememberContact(peerAci, claimed)
+        }
     }
 
     private fun contactName(aci: String): String =

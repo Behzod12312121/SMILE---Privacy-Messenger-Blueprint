@@ -16,6 +16,7 @@ import { z } from 'zod';
 import {
   DEVICE_ID_PRIMARY,
   MAX_PLAINTEXT_BYTES,
+  Username,
   ONE_TIME_PREKEY_BATCH,
   REGISTRATION_POW_DIFFICULTY,
   solveRegistrationWork,
@@ -77,6 +78,18 @@ const MessagePayload = z.object({
   body: z.string().min(1).max(MAX_PLAINTEXT_BYTES),
   sentAt: z.number().int().positive(),
   /**
+   * The sender's own handle, so a first message from a stranger can be shown
+   * with a name on it rather than eight characters of an identifier.
+   *
+   * It rides inside the ciphertext for the same reason the bucket does: there
+   * is deliberately no way to ask the relay who owns an account identifier,
+   * because that question answered for anyone would enumerate every user. It is
+   * a claim, not a proof — sealed sender establishes which account sent this,
+   * not what it is called — so a recipient that cares checks it against the
+   * directory, where the lookup runs the safe way round.
+   */
+  username: Username.optional(),
+  /**
    * The sender's own delivery bucket, so the recipient can reply without asking
    * the relay anything. It rides inside the ciphertext precisely so that
    * knowing where to answer never becomes a query the relay can observe.
@@ -89,6 +102,8 @@ export interface IncomingMessage {
   senderAci: string;
   senderDeviceId: number;
   body: string;
+  /** What the sender says they are called. A claim; verify before trusting it. */
+  senderUsername: string | null;
   sentAt: number;
   receivedAt: number;
 }
@@ -360,7 +375,13 @@ export class MillygramClient {
       const bucketId = this.store.getMetaNumber(peerBucketMeta(target.aci));
       if (bucketId === null) throw new Error(`no delivery bucket known for ${target.aci}`);
 
-      const payload: MessagePayload = { v: 1, body, sentAt: Date.now(), bucketId: this.bucketId };
+        const payload: MessagePayload = {
+        v: 1,
+        body,
+        sentAt: Date.now(),
+        bucketId: this.bucketId,
+        username: this.username,
+      };
 
       const sealed = await sealedSenderEncryptMessage(
         bytes(Buffer.from(JSON.stringify(payload), 'utf8')),
@@ -438,6 +459,7 @@ export class MillygramClient {
         senderAci,
         senderDeviceId: result.deviceId(),
         body: parsed.data.body,
+        senderUsername: parsed.data.username ?? null,
         sentAt: parsed.data.sentAt,
         receivedAt: Date.now(),
       };

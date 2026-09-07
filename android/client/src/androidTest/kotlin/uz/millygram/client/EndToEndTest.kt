@@ -279,6 +279,33 @@ class EndToEndTest {
     }
 
     @Test
+    fun aMessageCarriesTheSendersHandleForTheRecipientToCheck() {
+        val sender = register("handlea")
+        val recipient = register("handleb")
+
+        sender.send(recipient.username, "salom")
+
+        val received = mutableListOf<MillygramClient.IncomingMessage>()
+        recipient.catchUp { received += it }
+
+        assertEquals(1, received.size)
+        assertEquals(
+            "a first message must arrive with something to call the sender",
+            sender.username,
+            received[0].senderUsername,
+        )
+
+        // And the claim has to be checkable, because it is only a claim: the
+        // sealed sender proves which account sent this, not what it is named.
+        // The directory runs handle to identifier, which is the safe direction
+        // — the reverse would let anyone enumerate who owns an account.
+        assertEquals(
+            sender.aci,
+            recipient.resolveUsername(received[0].senderUsername!!).aci,
+        )
+    }
+
+    @Test
     fun bothSidesComputeTheSameSafetyNumber() {
         val alisher = register("safetya")
         val nodira = register("safetyb")

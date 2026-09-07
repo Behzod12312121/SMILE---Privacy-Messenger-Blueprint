@@ -232,6 +232,11 @@ class MillygramClient private constructor(
                 put("body", body)
                 put("sentAt", System.currentTimeMillis())
                 put("bucketId", bucketId)
+                // Inside the ciphertext for the same reason the bucket is:
+                // there is deliberately no way to ask the relay who owns an
+                // identifier, so a first message from a stranger would
+                // otherwise arrive with nothing to call them by.
+                put("username", username)
             }.toString().toByteArray(Charsets.UTF_8)
 
             val cipher = SealedSessionCipher(combined, UUID.fromString(aci), null, deviceId)
@@ -265,6 +270,8 @@ class MillygramClient private constructor(
         val senderAci: String,
         val senderDeviceId: Int,
         val body: String,
+        /** What the sender says they are called. A claim; verify before trusting it. */
+        val senderUsername: String?,
         val sentAt: Long,
         val receivedAt: Long,
     )
@@ -372,6 +379,7 @@ class MillygramClient private constructor(
                 senderAci = result.senderUuid,
                 senderDeviceId = result.deviceId,
                 body = json.getString("body"),
+                senderUsername = json.optString("username").takeIf { Protocol.isValidUsername(it) },
                 sentAt = json.getLong("sentAt"),
                 receivedAt = System.currentTimeMillis(),
             ).also { message ->
