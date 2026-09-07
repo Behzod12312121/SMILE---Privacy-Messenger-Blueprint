@@ -4,7 +4,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+      specialUse rather than dataSync. Android 14 forbids starting a dataSync
+      foreground service from BOOT_COMPLETED outright, and the refusal arrives
+      as an exception from startForeground — which, thrown while the service is
+      being created, takes the whole app down. Seen on a handset: "FGS type
+      dataSync not allowed to start from BOOT_COMPLETED", followed by a crash
+      dialog. specialUse is permitted from boot and is an honest description:
+      holding one connection open is the entire job.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -64,6 +73,10 @@
         <service
             android:name=".DeliveryService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Holds the end-to-end encrypted delivery connection open so messages arrive while the app is closed. Push cannot be used without giving a third party a per-account device identifier." />
+        </service>
     </application>
 </manifest>

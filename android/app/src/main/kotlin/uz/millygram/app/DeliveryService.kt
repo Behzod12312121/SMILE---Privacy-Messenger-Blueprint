@@ -49,7 +49,19 @@ class DeliveryService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannels(this)
-        startForeground(ONGOING_ID, ongoingNotification())
+
+        // Never fatal. The system refuses a foreground service in more
+        // situations than it is comfortable to enumerate, and it refuses by
+        // throwing — which from onCreate is "unable to create service" and
+        // takes the process with it. Delivery failing to start is a quiet
+        // inconvenience; the app dying because of it is not.
+        val foreground = runCatching {
+            startForeground(ONGOING_ID, ongoingNotification())
+        }.isSuccess
+        if (!foreground) {
+            stopSelf()
+            return
+        }
 
         val started = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         scope = started
