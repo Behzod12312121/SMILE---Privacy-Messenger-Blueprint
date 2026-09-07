@@ -3,10 +3,6 @@ package uz.millygram.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import uz.millygram.app.data.MillygramSession
 import uz.millygram.app.data.SessionHolder
 
@@ -15,43 +11,31 @@ import uz.millygram.app.data.SessionHolder
  *
  * This is the half of "works like every other messenger" that a passphrase made
  * impossible: nothing could decrypt an arriving message until somebody typed it
- * in, so a phone that rebooted overnight was silent until it was picked up and
- * unlocked twice. With the data key held by the device, the first unlock of the
- * phone is enough — the keystore key is unusable while the screen is locked, so
- * this waits for that rather than working around it.
+ * in, so a phone that rebooted overnight stayed silent until it was picked up.
+ *
+ * It does nothing but start the service, deliberately. The first version opened
+ * the vault and connected here, inside goAsync, and then started the service
+ * once that finished — which is the shape Android restricts twice over. A
+ * receiver has about ten seconds before the process can be frozen, and this one
+ * was: the logs read "freezing uz.millygram" eleven seconds in, with no service
+ * ever started. Starting a foreground service from the background is also only
+ * permitted while a boot broadcast is actually being handled, which by then it
+ * no longer was. The service has its own lifetime and does the waiting.
  */
 class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action != Intent.ACTION_BOOT_COMPLETED &&
-            action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
             action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) {
             return
         }
         if (SessionHolder.session != null) return
+        // Nothing to resume without a key this device can use, and asking for a
+        // passphrase is not something a broadcast can do.
         if (!MillygramSession.canResume(context)) return
 
-        val app = context.applicationContext
-        val pending = goAsync()
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            try {
-                val session = MillygramSession.resume(app, defaultServer(), defaultRelay()) ?: return@launch
-                SessionHolder.adopt(session)
-                session.connect()
-                DeliveryService.start(app)
-            } catch (_: Throwable) {
-                // A locked screen keeps the key out of reach, which is the
-                // intended behaviour rather than a failure. The next launch
-                // picks it up.
-            } finally {
-                pending.finish()
-            }
-        }
+        DeliveryService.start(context.applicationContext)
     }
-
-    private fun defaultServer(): String = BuildConfig.DEFAULT_SERVER
-
-    private fun defaultRelay(): String = BuildConfig.DEFAULT_RELAY
 }

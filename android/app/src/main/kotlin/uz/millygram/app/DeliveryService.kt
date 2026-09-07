@@ -198,14 +198,26 @@ class DeliveryService : Service() {
         /** Which conversation a tapped notification should open. */
         const val EXTRA_CONVERSATION = "uz.millygram.conversation"
 
-        fun start(context: Context) {
+        /**
+         * Starts delivery, and returns false rather than throwing if the system
+         * will not allow it.
+         *
+         * Android refuses a foreground service started from the background
+         * outside a handful of exemptions, and refuses it by throwing. Thrown
+         * from a broadcast receiver that becomes "unable to start receiver",
+         * which is a crash — the whole app dies because delivery could not be
+         * resumed, which is a far worse outcome than staying quiet until the
+         * app is opened. Seen exactly that way in the logs.
+         */
+        fun start(context: Context): Boolean = runCatching {
             val intent = Intent(context, DeliveryService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
-        }
+            true
+        }.getOrDefault(false)
 
         fun stop(context: Context) {
             context.stopService(Intent(context, DeliveryService::class.java))

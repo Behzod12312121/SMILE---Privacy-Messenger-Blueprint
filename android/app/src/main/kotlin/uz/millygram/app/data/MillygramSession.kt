@@ -85,8 +85,6 @@ class MillygramSession private constructor(
 
     private var subscription: Closeable? = null
     private var reconnectJob: Job? = null
-    private var dropped = CompletableDeferred<Unit>()
-
     /** Set by [close] so the retry loop does not fight a deliberate shutdown. */
     @Volatile
     private var closed = false
@@ -118,6 +116,15 @@ class MillygramSession private constructor(
                 // know — that nothing is arriving right now.
                 if (!failing) _status.value = Status.Connecting
 
+                // One deferred per attempt, created before the socket that
+                // completes it. Sharing a single field across attempts left a
+                // gap between awaiting it and replacing it: a close arriving in
+                // that gap completed the deferred nobody was waiting on any
+                // more, and the loop then waited for ever on the fresh one —
+                // parked, with the status still reading online while nothing
+                // arrived. Seen exactly that way, twice, before this.
+                val thisAttempt = CompletableDeferred<Unit>()
+
                 val opened = runCatching {
                     client.onIdentityMismatch = { senderAci ->
                         _identityWarnings.update { it + senderAci }
@@ -139,7 +146,7 @@ class MillygramSession private constructor(
                                 ),
                             )
                         },
-                        onDisconnected = { dropped.complete(Unit) },
+                        onDisconnected = { thisAttempt.complete(Unit) },
                     )
                 }.isSuccess
 
@@ -156,8 +163,7 @@ class MillygramSession private constructor(
                 backoffMs = MIN_BACKOFF_MS
 
                 // Park until the socket reports it is gone, then rebuild it.
-                dropped.await()
-                dropped = CompletableDeferred()
+                thisAttempt.await()
                 subscription?.runCatching { close() }
                 subscription = null
                 if (closed) break
@@ -452,9 +458,8 @@ class MillygramSession private constructor(
 
     override fun close() {
         closed = true
-        // Wake the retry loop so it observes `closed` and stops, rather than
-        // parking forever on a socket that will never drop again.
-        dropped.complete(Unit)
+        // Cancelling is what wakes the loop now; there is no shared deferred
+        // left to complete, which is the point.
         reconnectJob?.cancel()
         subscription?.runCatching { close() }
         client.close()
