@@ -25,3 +25,16 @@
 # the original source file name.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# --- runtime self-protection ------------------------------------------------
+# The native methods are looked up by JNI name, so their signatures must not be
+# renamed. The class may be, but the method names are the contract with C.
+-keepclasseswithmembernames class uz.millygram.client.TamperSignals {
+    native <methods>;
+}
+
+# String obfuscation is deliberately not attempted with a keep rule; R8 full
+# mode already inlines and repacks. The needle strings that matter — the paths
+# and library names the guard looks for — live in the native .so, not in the
+# Kotlin, so they are not in the DEX for a decompiler to grep in the first
+# place. That was the reason for writing the guard in C.

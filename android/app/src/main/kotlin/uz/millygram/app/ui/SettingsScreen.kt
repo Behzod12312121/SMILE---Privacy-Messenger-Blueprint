@@ -24,6 +24,13 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import uz.millygram.client.Handles
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +57,8 @@ fun SettingsScreen(
     onCycleNotificationDetail: () -> Unit = {},
     onLock: () -> Unit = {},
     onBackup: () -> Unit = {},
+    onRecoveryNumber: () -> Unit = {},
+    onToggleRequireUnlock: (Boolean) -> Unit = {},
 ) {
     Column(
         Modifier
@@ -96,6 +105,35 @@ fun SettingsScreen(
                 enabled = false,
                 leading = { KeyGlyph(theme.textSecondary) },
             )
+            RowSeparator()
+            // Where the key that unlocks this device's vault physically lives.
+            // Shown, not configurable: it is a fact about the hardware, and a
+            // user on a phone without a secure element deserves to know the
+            // protection is the platform lock rather than a dedicated chip.
+            SettingsRow(
+                label = "Kalit himoyasi",
+                value = when {
+                    account.strongBox -> "Alohida xavfsizlik chipi"
+                    account.strongBoxHardware -> "Qurilma himoyasi (chip mavjud)"
+                    else -> "Qurilma himoyasi (TEE)"
+                },
+                enabled = false,
+                leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
+            )
+            if (account.environment != "clean") {
+                RowSeparator()
+                // Only ever shown when something looks wrong, and only ever as a
+                // warning to the user — never as a lock. The checks behind it are
+                // defeatable, so a determined attacker sees "clean" here anyway;
+                // this is for the ordinary user whose phone has quietly been
+                // rooted by something they installed.
+                SettingsRow(
+                    label = "Diqqat: qurilma xavfsizligi",
+                    value = "Oʻzgartirilgan muhit aniqlandi",
+                    enabled = false,
+                    leading = { LockGlyph(theme.danger, size = 20.dp) },
+                )
+            }
             RowSeparator()
             // Not a chevron. An account is one device by design — there is no
             // linked-device protocol to show a list of, and a row that opened
@@ -154,6 +192,20 @@ fun SettingsScreen(
                 leading = { EyeOffGlyph(theme.textDisabled) },
             )
             RowSeparator()
+            // Above the screenshot blocker because it is the stronger of the
+            // two and the one people come looking for.
+            SettingsRow(
+                label = "Barmoq izi bilan ochish",
+                value = account.unlockUnavailable,
+                enabled = account.unlockUnavailable == null,
+                leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
+                trailing = {
+                    if (account.unlockUnavailable == null) {
+                        MillyToggle(account.requireUnlock, onToggleRequireUnlock)
+                    }
+                },
+            )
+            RowSeparator()
             SettingsRow(
                 label = "Ekran qulfi",
                 leading = { LockGlyph(theme.textSecondary, size = 20.dp) },
@@ -162,7 +214,40 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.padding(top = Space.xl))
+        SectionHeader("Hisobni yoʻqotmaslik")
         Card {
+            // The value doubles as the explanation. "Ulanmagan" is the default
+            // and is not a warning: an account with no number attached is the
+            // private one, and nagging about it would push people into handing
+            // over a number they did not need to.
+            SettingsRow(
+                label = "Tiklash raqami",
+                value = account.recoveryNumber ?: "Ulanmagan",
+                leading = { PhoneGlyph(theme.textSecondary) },
+                trailing = { Chevron() },
+                onClick = onRecoveryNumber,
+            )
+            // Handles carry digits nobody can guess and there is no directory to
+            // search, so being told a name is the only way to be found. This is
+            // that, in one paste — and it never touches the gateway, which is
+            // why it can be handed over anywhere without the gateway learning
+            // that an introduction happened.
+            if (Handles.isValidUsername(account.username)) {
+                RowSeparator()
+                val clipboard = LocalClipboardManager.current
+                var copied by remember { mutableStateOf(false) }
+                SettingsRow(
+                    label = "Taklif havolasi",
+                    value = if (copied) "Nusxalandi" else "Nusxalash",
+                    leading = { ShieldGlyph(theme.textSecondary) },
+                    trailing = { Chevron() },
+                    onClick = {
+                        clipboard.setText(AnnotatedString(Handles.createLink(account.username)))
+                        copied = true
+                    },
+                )
+            }
+            RowSeparator()
             SettingsRow(
                 label = "Zaxira nusxa",
                 value = "Faylga saqlash",
@@ -177,12 +262,32 @@ fun SettingsScreen(
             // Closing the app does not close the session any more — delivery
             // keeps running so notifications can arrive — so there has to be a
             // way to say stop.
+            //
+            // The value line is the one thing on this screen that has to be
+            // exactly true. This row used to read "Suhbatlarni yopish" while the
+            // device kept its own key to the vault, so the next tap on the app
+            // icon reopened everything without asking; somebody who pressed it
+            // before handing the phone over was told one thing and given
+            // another. It now destroys that key as well, and says so, because
+            // the whole reason a person reaches for this row is that they are
+            // about to be parted from the handset and need to know what the app
+            // will do while it is out of their hands.
             SettingsRow(
                 label = "Qulflash",
-                value = "Suhbatlarni yopish",
+                value = "Parol soʻraladi",
                 leading = { KeyGlyph(theme.textSecondary) },
                 trailing = { Chevron() },
                 onClick = onLock,
+            )
+            RowSeparator()
+            // Not clickable: it is the sentence the row above needs and does not
+            // have room for. Delivery stops too, so nothing arrives until the
+            // passphrase is typed again — worth stating rather than leaving the
+            // user to discover it as silence.
+            SettingsRow(
+                label = "Suhbatlar yopiladi, xabarlar kelmaydi",
+                enabled = false,
+                leading = { LockGlyph(theme.textDisabled, size = 20.dp) },
             )
         }
 
@@ -209,7 +314,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(3.dp),
             modifier = Modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.xxl),
         ) {
-            Text("MillyGram 1.0 · Ochiq kodli", style = MillyType.Timestamp, color = theme.textTertiary)
+            Text("Smile 1.0 · Ochiq kodli", style = MillyType.Timestamp, color = theme.textTertiary)
             Text(
                 "Qurilish · ${account.buildHash}",
                 style = MillyType.Timestamp,
@@ -230,7 +335,7 @@ private fun ProfileCard(account: Account) {
                 .background(theme.surfaceRaised)
                 .padding(Space.lg),
         ) {
-            Avatar(account.username, account.displayName, 58.dp)
+            Avatar(account.avatarSeed, account.displayName, 58.dp, animated = true)
             Spacer(Modifier.width(15.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(account.displayName, style = MillyType.Title, color = theme.textPrimary)

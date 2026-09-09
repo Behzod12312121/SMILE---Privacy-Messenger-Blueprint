@@ -50,6 +50,12 @@ fun SafetyNumberScreen(
     peerAci: String,
     /** Full name, so the avatar initials match the rest of the app. */
     peerName: String,
+    /** Gateway-assigned; null until this device has the peer's keys. */
+    peerAvatarSeed: ByteArray?,
+    /** The emoji this device shows for the peer. Local only. */
+    peerAvatarEmoji: String? = null,
+    /** Opens the picker. The choice never leaves this phone. */
+    onChangeAvatarEmoji: () -> Unit = {},
     /** Just the given name, because the instruction reads as a sentence. */
     peerGivenName: String,
     safetyNumber: String,
@@ -83,7 +89,14 @@ fun SafetyNumberScreen(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = Space.gutter),
         ) {
             Spacer(Modifier.weight(1f))
-            Avatar(peerAci, peerName, 72.dp)
+            Avatar(
+                peerAvatarSeed,
+                peerName,
+                72.dp,
+                modifier = Modifier.clickable(onClick = onChangeAvatarEmoji),
+                animated = true,
+                emojiId = peerAvatarEmoji,
+            )
             Spacer(Modifier.height(Space.lg))
 
             Text(

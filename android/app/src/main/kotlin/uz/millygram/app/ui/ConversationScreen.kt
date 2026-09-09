@@ -1,5 +1,18 @@
 package uz.millygram.app.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +31,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,6 +86,10 @@ import uz.millygram.protocol.Protocol
 fun ConversationScreen(
     peerAci: String,
     peerName: String,
+    /** Gateway-assigned; null until this device has the peer's keys. */
+    peerAvatarSeed: ByteArray?,
+    /** The emoji this device shows for the peer. Local only. */
+    peerAvatarEmoji: String? = null,
     timeline: List<TimelineItem>,
     onBack: () -> Unit,
     onOpenProfile: () -> Unit,
@@ -80,7 +103,7 @@ fun ConversationScreen(
             .background(theme.surface)
             .imePadding(),
     ) {
-        ConversationHeader(peerAci, peerName, onBack, onOpenProfile)
+        ConversationHeader(peerAci, peerName, peerAvatarSeed, peerAvatarEmoji, onBack, onOpenProfile)
 
         // Shown when a message arrived from this contact signed by an identity
         // key we had not pinned. Everything below it in the thread predates a
@@ -88,14 +111,85 @@ fun ConversationScreen(
         // rather than inside it, and does not go away on its own.
         if (identityChanged) IdentityChangedBanner(onOpenProfile)
 
-        LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                start = Space.lg, end = Space.lg, top = 14.dp, bottom = Space.md,
-            ),
-            verticalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            items(timeline, onRetry)
+        val listState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
+
+        // "At the bottom" is deliberately generous. Requiring the very last
+        // pixel means a thread that is one line short of filling the screen, or
+        // a user who nudged it a few dp, stops following new messages for no
+        // reason they could see.
+        val atBottom by remember {
+            derivedStateOf {
+                val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                    ?: return@derivedStateOf true
+                val total = listState.layoutInfo.totalItemsCount
+                last.index >= total - 2
+            }
+        }
+
+        // Held rather than derived from atBottom, because the answer has to be
+        // the one from the instant the message landed. Deciding later reads the
+        // scroll position after the user has already moved, and a thread that
+        // jumps because they happened to scroll down while a message was in
+        // flight is exactly the behaviour this exists to prevent.
+        var pending by remember { mutableStateOf<String?>(null) }
+        var seen by remember { mutableIntStateOf(timeline.size) }
+
+        LaunchedEffect(timeline.size) {
+            if (timeline.size <= seen) {
+                // The thread shrank, or this is the first composition. Nothing
+                // arrived, so nothing should move.
+                seen = timeline.size
+                return@LaunchedEffect
+            }
+            val arrival = timeline.lastOrNull() as? TimelineItem.Bubble
+            val incoming = arrival?.message?.outgoing == false
+            seen = timeline.size
+
+            when {
+                // Anything we sent ourselves always scrolls: the user pressed
+                // send, so they are looking at the bottom by definition.
+                arrival != null && !incoming -> {
+                    pending = null
+                    listState.animateScrollToItem(timeline.lastIndex)
+                }
+                atBottom -> {
+                    pending = null
+                    listState.animateScrollToItem(timeline.lastIndex)
+                }
+                incoming -> pending = arrival.message.body.take(46).let {
+                    if (arrival.message.body.length > 46) it.trimEnd() + "…" else it
+                }
+            }
+        }
+
+        // Reading down to the end answers the notice, so it should not need
+        // dismissing as well.
+        LaunchedEffect(atBottom) { if (atBottom) pending = null }
+
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = Space.lg, end = Space.lg, top = 14.dp, bottom = Space.md,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Space.sm),
+            ) {
+                items(timeline, onRetry)
+            }
+
+            NewMessagePill(
+                visible = pending != null,
+                preview = pending.orEmpty(),
+                onClick = {
+                    pending = null
+                    scope.launch { listState.animateScrollToItem(timeline.lastIndex) }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 14.dp),
+            )
         }
 
         Composer(onSend)
@@ -121,6 +215,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.items(
 private fun ConversationHeader(
     peerAci: String,
     peerName: String,
+    /** Gateway-assigned; null until this device has the peer's keys. */
+    peerAvatarSeed: ByteArray?,
+    /** The emoji this device shows for the peer. Local only. */
+    peerAvatarEmoji: String? = null,
     onBack: () -> Unit,
     onOpenProfile: () -> Unit,
 ) {
@@ -140,7 +238,9 @@ private fun ConversationHeader(
                 Icon(Icons.Rounded.ArrowBack, "Orqaga", tint = theme.accent, modifier = Modifier.size(24.dp))
             }
 
-            Avatar(peerAci, peerName, 38.dp)
+            // The one avatar the screen is built around, so this is the
+            // one that gets a running decoder.
+            Avatar(peerAvatarSeed, peerName, 38.dp, animated = true, emojiId = peerAvatarEmoji)
             Spacer(Modifier.width(11.dp))
 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -188,7 +288,7 @@ private fun EncryptionNotice() {
                     withStyle(SpanStyle(color = theme.noticeStrong, fontWeight = FontWeight.SemiBold)) {
                         append("uchidan-uchigacha shifrlangan")
                     }
-                    append(". Ularni hech kim — MillyGram ham — oʻqiy olmaydi.")
+                    append(". Ularni hech kim — Smile ham — oʻqiy olmaydi.")
                 },
                 style = MillyType.Notice,
                 color = theme.noticeText,
@@ -229,6 +329,22 @@ private fun MessageBubble(message: Message, onRetry: (Long) -> Unit = {}) {
                 .background(background)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
+            // Who wrote it, in a group. Without this a group thread is a
+            // column of anonymous text: the same words mean different things
+            // depending on which of eight people said them, and a reply can be
+            // aimed at the wrong person entirely. Absent in a private thread,
+            // where it would be the same name on every bubble.
+            if (!outgoing && message.author != null) {
+                Text(
+                    message.author,
+                    style = MillyType.Meta,
+                    color = theme.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 3.dp),
+                )
+            }
+
             message.replyTo?.let { reply ->
                 Row(Modifier.padding(bottom = 7.dp)) {
                     Box(
@@ -297,6 +413,17 @@ private fun Composer(onSend: (String) -> Unit) {
     var draft by remember { mutableStateOf("") }
     val canSend = draft.isNotBlank()
 
+    // The glow is tied to focus rather than left running. An ambient animation
+    // on a screen somebody is only reading is a frame every 16ms and a battery
+    // complaint; while the keyboard is up the phone is already awake and busy,
+    // which is the one moment it costs nothing.
+    var focused by remember { mutableStateOf(false) }
+    val glow by animateFloatAsState(
+        targetValue = if (focused) 1f else 0f,
+        animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
+        label = "composerGlow",
+    )
+
     Column(Modifier.background(theme.background)) {
         Box(Modifier.fillMaxWidth().height(Space.hairline).background(theme.hairline))
         Row(
@@ -306,12 +433,35 @@ private fun Composer(onSend: (String) -> Unit) {
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
+            Box(Modifier.weight(1f)) {
+                // Sits under the field and bleeds past it, so the colour reads
+                // as light coming from behind glass rather than as a border.
+                if (glow > 0.01f) {
+                    AmbientGlow(
+                        intensity = glow,
+                        // No negative padding to make it bleed: padding throws
+                        // on negatives, and it is not needed anyway — the glow
+                        // draws radial fields wider than this box and nothing
+                        // above clips them.
+                        modifier = Modifier.matchParentSize(),
+                    )
+                }
             Box(
                 Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(22.dp))
-                    .background(theme.field)
+                    .background(theme.field.copy(alpha = 0.82f))
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.13f * (0.35f + glow * 0.65f)),
+                                Color.White.copy(alpha = 0.03f),
+                            ),
+                        ),
+                        shape = RoundedCornerShape(22.dp),
+                    )
                     .padding(horizontal = 17.dp, vertical = 11.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
@@ -356,8 +506,11 @@ private fun Composer(onSend: (String) -> Unit) {
                         capitalization = KeyboardCapitalization.Sentences,
                         platformImeOptions = PlatformImeOptions("noPersonalizedLearning"),
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focused = it.isFocused },
                 )
+            }
             }
 
             Spacer(Modifier.width(10.dp))
@@ -406,5 +559,69 @@ private fun IdentityChangedBanner(onOpenProfile: () -> Unit) {
             color = theme.danger,
             modifier = Modifier.weight(1f),
         )
+    }
+}
+
+/**
+ * The light behind the composer.
+ *
+ * Three soft radial fields drifting past each other — a mesh gradient, built
+ * out of overlapping gradients rather than a blur because a real backdrop blur
+ * needs RenderEffect on API 31, and this app supports API 26. Overlapping
+ * radial falloff is already soft-edged, so nothing here needs blurring to look
+ * diffused.
+ *
+ * The palette is the app's own Samarkand teal moving through periwinkle to
+ * violet, not the pink-and-lavender that signals an AI assistant. This is a
+ * messenger; the glow should say the field is live, not that a model is
+ * listening.
+ */
+@Composable
+private fun AmbientGlow(intensity: Float, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "ambient")
+    val drift by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable<Float>(tween(11_000, easing = LinearEasing)),
+        label = "drift",
+    )
+    // A slow breath on top of the drift, so the glow never sits perfectly
+    // still without ever pulsing hard enough to pull the eye off the text.
+    val breath by transition.animateFloat(
+        initialValue = 0.86f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable<Float>(
+            animation = tween(3_400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "breath",
+    )
+
+    val tints = listOf(theme.accent, Color(0xFF8D9FFF), Color(0xFFB07CF3))
+
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
+        val reach = h * 1.5f
+
+        tints.forEachIndexed { index, tint ->
+            val phase = drift + index * 2.094f
+            val cx = w * (0.5f + 0.34f * kotlin.math.cos(phase)) 
+            val cy = h * (0.5f + 0.30f * kotlin.math.sin(phase * 1.3f))
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        tint.copy(alpha = 0.42f * intensity),
+                        tint.copy(alpha = 0.16f * intensity),
+                        tint.copy(alpha = 0f),
+                    ),
+                    center = Offset(cx, cy),
+                    radius = reach * breath,
+                ),
+                radius = reach * breath,
+                center = Offset(cx, cy),
+            )
+        }
     }
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Deep navy rather than the near-black it was.
+
+  Gold on true black is harsh — the hue has nowhere to sit and the edges buzz
+  against the ground. A blue-biased dark gives the gold something to be warm
+  against, which is most of why the reference marks in this style read as
+  expensive rather than as loud. The lift sits at the upper left, under the thin
+  end of the crescent, so the one light source in the foreground has somewhere
+  to have come from.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:centerX="36" android:centerY="30" android:gradientRadius="94"
+                android:type="radial">
+                <item android:offset="0" android:color="#FF1B2E45"/>
+                <item android:offset="1" android:color="#FF080F1A"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

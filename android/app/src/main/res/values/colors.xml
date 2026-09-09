@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The brand gold, as the notification shade sees it.
+
+      Android tints the app-name line beside a notification with this, and on
+      some versions the small icon with it too. Left unset it uses the system
+      default, which is grey on most skins and the wallpaper accent on others —
+      so the one place the mark appears most often would be the one place it is
+      not ours.
+
+      This is the mid-stop of the launcher icon's gradient rather than its
+      lightest or darkest, because the shade renders it flat and the mid-tone is
+      what the eye remembers the icon as.
+    -->
+    <color name="brand_gold">#FFF6BB60</color>
+</resources>

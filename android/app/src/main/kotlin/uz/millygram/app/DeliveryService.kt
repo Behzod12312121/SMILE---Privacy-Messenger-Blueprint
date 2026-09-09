@@ -93,13 +93,13 @@ class DeliveryService : Service() {
         }
     }
 
-    private suspend fun resume(): MillygramSession? {
-        val session = runCatching {
+    private suspend fun resume(): MillygramSession? = SessionHolder.resumeOrExisting {
+        // Through the holder rather than around it. The view model resumes the
+        // same vault when a screen appears, and whichever of the two got there
+        // second used to close the other's session — and its database with it.
+        runCatching {
             MillygramSession.resume(this, BuildConfig.DEFAULT_SERVER, BuildConfig.DEFAULT_RELAY)
-        }.getOrNull() ?: return null
-        SessionHolder.adopt(session)
-        session.connect()
-        return session
+        }.getOrNull()?.also { it.connect() }
     }
 
     /** Suspends until the screen is unlocked, returning at once if it already is. */
@@ -162,13 +162,15 @@ class DeliveryService : Service() {
 
         val anonymous = getString(R.string.notification_new_message)
         val locked = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ContextCompat.getColor(this, R.color.brand_gold))
             .setContentTitle(anonymous)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
         val builder = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ContextCompat.getColor(this, R.color.brand_gold))
             .setContentIntent(open)
             .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
@@ -194,7 +196,8 @@ class DeliveryService : Service() {
 
     private fun ongoingNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ONGOING)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ContextCompat.getColor(this, R.color.brand_gold))
             .setContentTitle(getString(R.string.notification_listening))
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)

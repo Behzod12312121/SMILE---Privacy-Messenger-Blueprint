@@ -6,9 +6,30 @@ import androidx.compose.ui.graphics.Color
 /**
  * The palette.
  *
- * The accent is a Samarkand tilework teal, chosen partly because it is rooted
- * in something local and partly because it is deliberately *not* Telegram's
- * blue — an app that copies the incumbent's colour gets read as a fork of it.
+ * The accent is the brand gold, the colour of the mark.
+ *
+ * It replaced a Samarkand tilework teal, which was rooted in something local
+ * and was deliberately not Telegram's blue. That reasoning still holds and the
+ * teal is worth keeping in the history: it was given up so the icon on the home
+ * screen and the send button inside the app would agree, which matters more
+ * than either colour does on its own.
+ *
+ * Gold is a light hue, and that costs something teal did not. The accent is
+ * used both as text — links, tints, the back arrow — and as a fill with text on
+ * top, so it has to clear contrast in both directions at once. Teal was dark
+ * enough to do that with one value. Gold is not: #F6BB60, the gold of the icon,
+ * is 1.72:1 against white and unreadable as either.
+ *
+ * So there are two golds, and the split is the same one the palette already
+ * made for teal. Light mode takes #926311. The lightest gold that clears
+ * 4.5:1 on white is #9C6A10 at 4.68, but an accent sitting on the threshold has
+ * no headroom left for a tinted surface underneath it — that value fell to 4.18
+ * against accentMuted, which is where the lock glyph is drawn. #926311 gives
+ * 5.23 on white and 4.67 on the muted surface, so every pairing clears rather
+ * than only the one that gets measured. Dark mode takes
+ * the icon's own #F6BB60, which is 12.20:1 on black and carries dark text at
+ * 9.53:1. The mark is the dark-mode value; the light-mode value is what is left
+ * of it once legibility is paid for.
  *
  * Dark mode is true black rather than the dark grey every other messenger
  * uses. On the OLED panels most phones ship now that is a real battery saving,
@@ -56,16 +77,16 @@ val LightColors = MillyColors(
     textSecondary = Color(0xFF5C6A70),
     textTertiary = Color(0xFF8A979D),
     textDisabled = Color(0xFFC2CBCF),
-    accent = Color(0xFF0F7A8F),
+    accent = Color(0xFF926311),
     onAccent = Color(0xFFFFFFFF),
-    accentMuted = Color(0xFFE9F2F4),
+    accentMuted = Color(0xFFFAF1E2),
     bubbleIncoming = Color(0xFFFFFFFF),
-    bubbleOutgoing = Color(0xFF0F7A8F),
+    bubbleOutgoing = Color(0xFF926311),
     onBubbleIncoming = Color(0xFF14181A),
     onBubbleOutgoing = Color(0xFFFFFFFF),
-    noticeSurface = Color(0xFFE9F2F4),
-    noticeText = Color(0xFF3F5B62),
-    noticeStrong = Color(0xFF26454D),
+    noticeSurface = Color(0xFFFAF1E2),
+    noticeText = Color(0xFF5E4A22),
+    noticeStrong = Color(0xFF43330F),
     verified = Color(0xFF2F8A5E),
     danger = Color(0xFFB3261E),
     dangerSurface = Color(0xFFFCEBE9),
@@ -82,18 +103,20 @@ val DarkColors = MillyColors(
     textSecondary = Color(0xFF94A2A8),
     textTertiary = Color(0xFF6B7880),
     textDisabled = Color(0xFF4A555B),
-    accent = Color(0xFF45BBD4),
-    onAccent = Color(0xFF04222A),
-    accentMuted = Color(0xFF0C2429),
+    accent = Color(0xFFF6BB60),
+    onAccent = Color(0xFF2B1D02),
+    accentMuted = Color(0xFF241B06),
     bubbleIncoming = Color(0xFF14191B),
     // A bright accent bubble glares at night, so the outgoing bubble drops to a
-    // deep teal while the accent itself stays bright for small controls.
-    bubbleOutgoing = Color(0xFF0E5361),
+    // deep gold while the accent itself stays bright for small controls. This
+    // matters more with gold than it did with teal: the accent is now a light
+    // hue, and a screenful of it on an OLED ground is a lamp.
+    bubbleOutgoing = Color(0xFF6B4A0E),
     onBubbleIncoming = Color(0xFFEDF1F2),
-    onBubbleOutgoing = Color(0xFFEAF7FA),
-    noticeSurface = Color(0xFF0C2429),
-    noticeText = Color(0xFF9BC2CA),
-    noticeStrong = Color(0xFFC7E5EB),
+    onBubbleOutgoing = Color(0xFFFBF3E4),
+    noticeSurface = Color(0xFF241B06),
+    noticeText = Color(0xFFCBAE72),
+    noticeStrong = Color(0xFFEBD9AE),
     verified = Color(0xFF4FB889),
     // Muted against black: a saturated red on an OLED ground reads as an
     // emergency, and this warning needs to be noticed, not panicked over.

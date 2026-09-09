@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -20,6 +21,8 @@
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
@@ -78,5 +81,27 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Holds the end-to-end encrypted delivery connection open so messages arrive while the app is closed. Push cannot be used without giving a third party a per-account device identifier." />
         </service>
+
+        <!--
+          Removed, not merged in. androidx.profileinstaller arrives through
+          Compose and contributes an exported broadcast receiver plus its
+          startup initialiser. Both exist so a build machine can push a
+          baseline profile and so benchmarks can trigger recompilation; neither
+          does anything for a user holding the app.
+
+          What they do add is an exported component on a messenger whose whole
+          claim is a small attack surface, and "exported receiver from a
+          profiling library" is exactly the line an auditor stops on. Startup
+          profiles still ship inside the APK and are still applied; only the
+          remote trigger goes away.
+        -->
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:node="remove" />
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+
     </application>
 </manifest>

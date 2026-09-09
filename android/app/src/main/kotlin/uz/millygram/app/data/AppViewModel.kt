@@ -1,12 +1,15 @@
 package uz.millygram.app.data
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uz.millygram.app.DeliveryService
 import uz.millygram.protocol.Protocol
 
@@ -27,6 +30,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         data object Locked : State
 
         data class Working(val what: String) : State
+
+        /** A recovery code is in flight to this number and is being waited for. */
+        data class CodeSent(val phoneNumber: String) : State
 
         data class Ready(val session: MillygramSession) : State
 
@@ -72,10 +78,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Opens with the device-held key, falling back to the passphrase screen. */
     private fun resume() {
         viewModelScope.launch {
-            runCatching { MillygramSession.resume(getApplication(), serverUrl, relayUrl.ifEmpty { null }) }
-                .getOrNull()
+            // Not adopt(): adopting closes whatever session is already there, and
+            // the delivery service may have opened this very vault a moment ago.
+            // Resuming asks the holder for the live one and only opens a session
+            // when there is none.
+            SessionHolder.resumeOrExisting {
+                runCatching { MillygramSession.resume(getApplication(), serverUrl, relayUrl.ifEmpty { null }) }
+                    .getOrNull()
+                    ?.also { it.connect() }
+            }
                 ?.let { session ->
-                    adopt(session)
+                    DeliveryService.start(getApplication())
                     _state.value = State.Ready(session)
                 }
                 ?: run { _state.value = State.Locked }
@@ -84,7 +97,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<State> = _state.asStateFlow()
 
     fun register(username: String, passphrase: String, server: String, relay: String) {
-        if (!Protocol.isValidUsername(username)) {
+        if (!Protocol.isValidNickname(username)) {
             _state.value = State.Failed(
                 "Foydalanuvchi nomi 3–32 ta belgi boʻlishi kerak: a–z, 0–9 yoki _",
                 State.NeedsAccount,
@@ -156,7 +169,92 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "wrong passphrase" in message -> "Parol notoʻgʻri"
             "already holds an account" in message ->
                 "Bu qurilmada allaqachon hisob bor. Avval uni oʻchiring"
-            "not a MillyGram backup" in message -> "Bu MillyGram zaxira fayli emas"
+            "not a MillyGram backup" in message -> "Bu Smile zaxira fayli emas"
+            else -> describe(failure)
+        }
+    }
+
+    /**
+     * Asks the gateway to text a recovery code.
+     *
+     * Deliberately advances to the code screen whatever the gateway says short
+     * of a hard failure, because the gateway answers the same way for a number
+     * it knows and one it does not. Reporting "no such number" here would turn
+     * this route into a way to ask whether a given person uses MillyGram, which
+     * in this country is a question with consequences.
+     */
+    fun startRecovery(phoneNumber: String, server: String, relay: String) {
+        val number = phoneNumber.filter { it.isDigit() || it == '+' }
+        if (!Protocol.isValidPhoneNumber(number)) {
+            _state.value = State.Failed(
+                "Raqamni xalqaro shaklda kiriting, masalan +998901234567",
+                State.NeedsAccount,
+            )
+            return
+        }
+
+        serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
+        relayUrl = relay.trim()
+        _state.value = State.Working("Kod yuborilmoqda…")
+
+        viewModelScope.launch {
+            runCatching { MillygramSession.startRecovery(serverUrl, number) }
+                .onSuccess { _state.value = State.CodeSent(number) }
+                .onFailure { _state.value = State.Failed(describe(it), State.NeedsAccount) }
+        }
+    }
+
+    /**
+     * Finishes a recovery: new keys, old handle, no history.
+     *
+     * On failure it returns to the code screen rather than the start, since the
+     * common case is a mistyped six digits and the code is still valid.
+     */
+    fun recover(phoneNumber: String, code: String, passphrase: String) {
+        if (passphrase.length < MIN_PASSPHRASE) {
+            _state.value = State.Failed(
+                "Parol kamida $MIN_PASSPHRASE ta belgidan iborat boʻlsin",
+                State.CodeSent(phoneNumber),
+            )
+            return
+        }
+
+        _state.value = State.Working("Hisob tiklanmoqda…")
+        viewModelScope.launch {
+            runCatching {
+                MillygramSession.recover(
+                    getApplication(),
+                    phoneNumber,
+                    code.trim(),
+                    passphrase,
+                    serverUrl,
+                    relayUrl.ifEmpty { null },
+                )
+            }.onSuccess { session ->
+                adopt(session)
+                _state.value = State.Ready(session)
+            }.onFailure { failure ->
+                _state.value = State.Failed(describeRecovery(failure), State.CodeSent(phoneNumber))
+            }
+        }
+    }
+
+    /** Abandons a recovery in progress, back to the first screen. */
+    fun cancelRecovery() {
+        if (_state.value is State.CodeSent) _state.value = State.NeedsAccount
+    }
+
+    private fun describeRecovery(failure: Throwable): String {
+        val message = failure.message.orEmpty()
+        return when {
+            // The gateway answers 401 for a wrong code and 404 for a number it
+            // has never seen. Both are shown as one message on purpose: telling
+            // them apart is the enumeration leak the start route avoids, and it
+            // would be pointless to close it there and open it here.
+            "bad_code" in message || "not_found" in message ->
+                "Kod notoʻgʻri yoki muddati oʻtgan"
+            "already holds an account" in message ->
+                "Bu qurilmada allaqachon hisob bor. Avval uni oʻchiring"
             else -> describe(failure)
         }
     }
@@ -164,9 +262,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun unlock(passphrase: String, server: String, relay: String) {
         serverUrl = server.trim().ifEmpty { DEFAULT_SERVER }
         relayUrl = relay.trim()
-        _state.value = State.Working("Ochilmoqda…")
 
         viewModelScope.launch {
+            val wait = withContext(Dispatchers.IO) { remainingPenaltyMs() }
+            if (wait > 0) {
+                _state.value = State.Failed(
+                    "Juda koʻp urinish. ${describeWait(wait)}dan keyin qayta urining",
+                    State.Locked,
+                )
+                return@launch
+            }
+
+            _state.value = State.Working("Ochilmoqda…")
             runCatching {
                 MillygramSession.open(
                     getApplication(),
@@ -175,15 +282,152 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     relayUrl.ifEmpty { null },
                 )
             }.onSuccess { session ->
+                withContext(Dispatchers.IO) { clearFailedAttempts() }
                 adopt(session)
                 _state.value = State.Ready(session)
             }.onFailure {
+                val penalty = withContext(Dispatchers.IO) { recordFailedAttempt() }
                 // The vault does not distinguish a wrong passphrase from a
                 // tampered file, and neither should this message: saying which
                 // it was would tell an attacker holding the device whether the
                 // passphrase they tried was the shape of the real one.
-                _state.value = State.Failed("Parol notoʻgʻri", State.Locked)
+                _state.value = State.Failed(
+                    if (penalty == 0L) {
+                        "Parol notoʻgʻri"
+                    } else {
+                        "Parol notoʻgʻri. Keyingi urinishgacha ${describeWait(penalty)}"
+                    },
+                    State.Locked,
+                )
             }
+        }
+    }
+
+    /**
+     * The count of consecutive wrong passphrases, kept outside the vault.
+     *
+     * It has to live somewhere readable before the vault opens, which rules out
+     * the vault itself — the counter's whole job is to be consulted while the
+     * only thing the attacker has produced so far is a failed open. So it is an
+     * ordinary private preferences file, and it is worth being honest about what
+     * that means: somebody with root, or with adb on a debuggable build, can
+     * delete it and start counting from zero again. This is not the defence
+     * against that person. It is the defence against the far commoner one —
+     * whoever is holding the phone, working through birthdays and the name of
+     * the street, or a script doing the same thing faster.
+     *
+     * scrypt already makes each guess cost real work. What it does not do is
+     * make the tenth guess cost more than the first, and that is what the
+     * growing delay adds. Nothing here is stored that identifies the account:
+     * a count and a timestamp, which say only that somebody got it wrong.
+     */
+    private val attempts by lazy {
+        getApplication<Application>().getSharedPreferences(ATTEMPT_PREFS, Context.MODE_PRIVATE)
+    }
+
+    /**
+     * How much longer the next attempt has to wait, in milliseconds.
+     *
+     * A clock that has moved backwards since the last failure is treated as if
+     * the wait had only just started rather than as if it were over. Winding the
+     * date back is the first thing anyone tries against a delay measured in wall
+     * time, and the alternative — a monotonic clock — resets on every reboot,
+     * which is even easier to arrange.
+     */
+    private fun remainingPenaltyMs(): Long {
+        val failures = attempts.getInt(ATTEMPT_COUNT, 0)
+        val penalty = penaltyMsFor(failures)
+        if (penalty == 0L) return 0
+
+        val last = attempts.getLong(ATTEMPT_LAST, 0L)
+        val now = System.currentTimeMillis()
+        if (now < last) {
+            attempts.edit().putLong(ATTEMPT_LAST, now).apply()
+            return penalty
+        }
+        return (last + penalty - now).coerceAtLeast(0)
+    }
+
+    /** Counts a wrong passphrase and returns the wait it has just bought. */
+    private fun recordFailedAttempt(): Long {
+        val failures = attempts.getInt(ATTEMPT_COUNT, 0) + 1
+        attempts.edit()
+            .putInt(ATTEMPT_COUNT, failures)
+            .putLong(ATTEMPT_LAST, System.currentTimeMillis())
+            .apply()
+        return penaltyMsFor(failures)
+    }
+
+    /** The right passphrase clears the record; nothing is held against the owner. */
+    private fun clearFailedAttempts() {
+        attempts.edit().clear().apply()
+    }
+
+    private fun describeWait(millis: Long): String {
+        val seconds = (millis + 999) / 1000
+        return if (seconds < 60) "$seconds soniya" else "${(seconds + 59) / 60} daqiqa"
+    }
+
+    /**
+     * Closes the session, stops delivery, and takes away the device's standing
+     * permission to open the vault again by itself.
+     *
+     * The last part is what makes this a lock rather than a gesture. Releasing
+     * the session zeroes the data key in memory, but the keystore-wrapped copy
+     * on disk survived it, so the next launch simply opened the vault again with
+     * no passphrase and no fingerprint — press Lock, swipe the app out of
+     * recents, tap the icon, and everything was back. Somebody who reaches for
+     * this row is doing it because they are about to hand the phone to a person
+     * they cannot refuse, and for them a lock that reopens on the next tap is
+     * worse than no lock at all, because they walk away believing it held.
+     *
+     * The account is untouched — this locks it, it does not leave it. The
+     * passphrase still opens it, and opening it that way arms the device key
+     * again, so this costs the user exactly one typing and then the app goes
+     * back to launching without asking.
+     *
+     * It runs off the main thread because forgetting touches SQLite and the
+     * keystore, and it refuses to claim success it did not get: if the wrapping
+     * could not be destroyed the session stays up and the failure is shown,
+     * rather than a locked screen over a vault the device can still open.
+     */
+    fun lock() {
+        val previous = _state.value
+        _state.value = State.Working("Qulflanmoqda…")
+
+        viewModelScope.launch {
+            DeliveryService.stop(getApplication())
+
+            val forgotten = withContext(Dispatchers.IO) {
+                runCatching {
+                    MillygramSession.forgetDeviceKey(getApplication())
+                    // Asked, not assumed. Forgetting swallows its own failures
+                    // by design — a keystore entry that was never there is not
+                    // an error — so the only honest way to know the shortcut is
+                    // gone is to go and look for it. This is the check that
+                    // stands between the user and a lock screen drawn over a
+                    // vault the phone can still open by itself.
+                    check(!MillygramSession.canResume(getApplication())) {
+                        "the device can still open the vault"
+                    }
+                }
+            }
+
+            if (forgotten.isFailure) {
+                // Delivery was already stopped, so it goes back up: the state
+                // being reported is "still open", and it has to be true of the
+                // notifications as well as of the session.
+                DeliveryService.start(getApplication())
+                _state.value = State.Failed(
+                    "Qulflab boʻlmadi. Suhbatlar ochiq qoldi, qayta urinib koʻring",
+                    previous,
+                )
+                return@launch
+            }
+
+            SessionHolder.release()
+            _state.value =
+                if (MillygramSession.exists(getApplication())) State.Locked else State.NeedsAccount
         }
     }
 
@@ -202,21 +446,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         DeliveryService.start(getApplication())
     }
 
-    /**
-     * Closes the session and stops delivery, returning to the passphrase
-     * screen.
-     *
-     * Worth having in a messenger like this one: handing someone your phone is
-     * a normal thing to do, and until now there was no way to shut the
-     * conversations without uninstalling. The account is untouched — this locks
-     * it, it does not leave it.
-     */
-    fun lock() {
-        DeliveryService.stop(getApplication())
-        SessionHolder.release()
-        _state.value = if (MillygramSession.exists(getApplication())) State.Locked else State.NeedsAccount
-    }
-
     fun dismissError() {
         val current = _state.value
         if (current is State.Failed) _state.value = current.previous
@@ -226,6 +455,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val session = (_state.value as? State.Ready)?.session
             ?: return Result.failure(IllegalStateException("no session"))
         return runCatching { session.send(recipient, body) }
+    }
+
+    /**
+     * Sends to a group, which is a fan-out of ordinary private sends.
+     *
+     * Separate from [send] because the destination is not a recipient: there is
+     * no address for a group, only a list of members the client sends to one at
+     * a time. Routing a group body through [send] would deliver it to whoever
+     * the thread key happened to name.
+     */
+    suspend fun sendToGroup(groupId: String, body: String): Result<Unit> {
+        val session = (_state.value as? State.Ready)?.session
+            ?: return Result.failure(IllegalStateException("no session"))
+        return runCatching { session.sendToGroup(groupId, body) }
+    }
+
+    suspend fun createGroup(name: String, members: List<String>): Result<String> {
+        val session = (_state.value as? State.Ready)?.session
+            ?: return Result.failure(IllegalStateException("no session"))
+        return runCatching { session.createGroup(name, members) }
+    }
+
+    suspend fun setGroupMembers(groupId: String, members: List<String>): Result<Unit> {
+        val session = (_state.value as? State.Ready)?.session
+            ?: return Result.failure(IllegalStateException("no session"))
+        return runCatching { session.setGroupMembers(groupId, members) }
+    }
+
+    suspend fun leaveGroup(groupId: String): Result<Unit> {
+        val session = (_state.value as? State.Ready)?.session
+            ?: return Result.failure(IllegalStateException("no session"))
+        return runCatching { session.leaveGroup(groupId) }
     }
 
     /** Re-sends a message the relay never accepted. */
@@ -243,24 +504,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * exception text; either one landing in the middle of an otherwise Uzbek
      * screen tells the user nothing and can carry internal detail with it.
      */
-    private fun describe(failure: Throwable): String {
-        val message = failure.message.orEmpty()
-        return when {
-            "username_taken" in message -> "Bu nom band"
-            "not_found" in message -> "Bunday foydalanuvchi topilmadi"
-            "slow_down" in message -> "Juda koʻp urinish. Biroz kuting"
-            // The device clock, not the server's: registration is refused if
-            // they differ by more than five minutes, and a handset that has
-            // been flat for a while comes back with the wrong time.
-            "clock_skew" in message -> "Qurilma soati notoʻgʻri. Sana va vaqtni tekshiring"
-            "work_required" in message -> "Server band. Biroz kutib, qayta urinib koʻring"
-            "Failed to connect" in message ||
-                "Unable to resolve" in message ||
-                "timeout" in message.lowercase() ||
-                failure is java.io.IOException -> "Serverga ulanib boʻlmadi"
-            else -> "Xatolik yuz berdi. Qayta urinib koʻring"
-        }
-    }
+    private fun describe(failure: Throwable): String = describeGatewayFailure(failure)
 
     /** Same wording, for failures that surface outside the onboarding screen. */
     fun explain(failure: Throwable): String = describe(failure)
@@ -279,5 +523,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
          * it cannot make a four-character passphrase safe.
          */
         const val MIN_PASSPHRASE = 8
+
+        private const val ATTEMPT_PREFS = "unlock-attempts"
+        private const val ATTEMPT_COUNT = "consecutive"
+        private const val ATTEMPT_LAST = "lastAt"
+
+        /**
+         * Two mistypes cost nothing.
+         *
+         * That number is chosen for the owner, not the attacker. A passphrase
+         * long enough to be worth having is a passphrase that gets fat-fingered
+         * on a phone keyboard, and somebody who has just been asked for it while
+         * standing in the street should not be shut out of their own messages
+         * for getting it wrong twice. Everything after that doubles — five
+         * seconds, ten, twenty — which a person barely notices and a script
+         * cannot outrun, because the wait is what it is regardless of how fast
+         * the guesses arrive.
+         *
+         * The cap is five minutes rather than an hour on purpose. An hour reads
+         * as security and is really a way to lose the account: the person most
+         * likely to hit the ceiling is the owner on a bad day, and a messenger
+         * they cannot get into for an hour is a messenger they go back to
+         * Telegram from. Twelve guesses an hour against scrypt is already a
+         * number no wordlist survives.
+         */
+        private const val FREE_ATTEMPTS = 2
+        private const val BASE_PENALTY_MS = 5_000L
+        private const val MAX_PENALTY_MS = 5 * 60_000L
+
+        private fun penaltyMsFor(failures: Int): Long {
+            if (failures <= FREE_ATTEMPTS) return 0
+            // Clamped before the shift rather than after: a counter left to run
+            // for long enough would otherwise shift past the width of a Long and
+            // wrap round to no delay at all, which is the one outcome this must
+            // never produce.
+            val steps = (failures - FREE_ATTEMPTS - 1).coerceAtMost(16)
+            return (BASE_PENALTY_MS shl steps).coerceAtMost(MAX_PENALTY_MS)
+        }
     }
 }

@@ -66,6 +66,8 @@ fun OnboardingScreen(
     onRestore: ((passphrase: String, server: String, relay: String) -> Unit)? = null,
     restoreFileChosen: Boolean = false,
     onChooseRestoreFile: () -> Unit = {},
+    /** Offered only when creating, for the same reason a restore is. */
+    onRecoverAccount: (() -> Unit)? = null,
 ) {
     var username by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
@@ -85,7 +87,7 @@ fun OnboardingScreen(
         Spacer(Modifier.height(64.dp))
 
         Text(
-            if (creating) "MillyGram" else "Qulfni oching",
+            if (creating) "Smile" else "Qulfni oching",
             style = MillyType.LargeTitle,
             color = theme.textPrimary,
         )
@@ -119,7 +121,7 @@ fun OnboardingScreen(
                     // name, and the protocol rejected it a tap later with a
                     // message about a-z. Refusing the keystroke says the same
                     // thing at the moment it is useful.
-                    username = Protocol.sanitizeUsername(it)
+                    username = Protocol.sanitizeNickname(it)
                 },
             )
             Spacer(Modifier.height(Space.lg))
@@ -230,6 +232,18 @@ fun OnboardingScreen(
             }
         }
 
+        if (creating && onRecoverAccount != null) {
+            Spacer(Modifier.height(Space.md))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Telefonni yoʻqotdingizmi? Raqam orqali tiklash",
+                    style = MillyType.Meta,
+                    color = theme.accent,
+                    modifier = Modifier.clickable(onClick = onRecoverAccount),
+                )
+            }
+        }
+
         Spacer(Modifier.height(Space.xxl))
         Box(Modifier.fillMaxWidth().navigationBarsPadding(), contentAlignment = Alignment.Center) {
             Text(
@@ -244,7 +258,7 @@ fun OnboardingScreen(
 }
 
 @Composable
-private fun FieldLabel(text: String) {
+internal fun FieldLabel(text: String) {
     Text(text, style = MillyType.SectionHeader, color = theme.textTertiary)
     Spacer(Modifier.height(Space.sm))
 }
@@ -263,7 +277,7 @@ private fun FieldLabel(text: String) {
 private const val MAX_FIELD_LENGTH = 256
 
 @Composable
-private fun Field(
+internal fun Field(
     value: String,
     placeholder: String,
     onValueChange: (String) -> Unit,

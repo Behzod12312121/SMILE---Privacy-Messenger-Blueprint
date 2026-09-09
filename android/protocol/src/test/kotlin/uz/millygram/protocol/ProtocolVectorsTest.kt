@@ -35,6 +35,8 @@ class ProtocolVectorsTest {
         assertEquals(constants.getInt("paddedEnvelopeBytes"), Protocol.PADDED_ENVELOPE_BYTES)
         assertEquals(constants.getInt("obliviousRequestBytes"), Protocol.OBLIVIOUS_REQUEST_BYTES)
         assertEquals(constants.getInt("maxPlaintextBytes"), Protocol.MAX_PLAINTEXT_BYTES)
+        assertEquals(constants.getInt("paddedPayloadBytes"), Protocol.PADDED_PAYLOAD_BYTES)
+        assertEquals(constants.getInt("maxGroupRevision"), Protocol.MAX_GROUP_REVISION)
         assertEquals(constants.getString("sigRegister"), Protocol.SIG_REGISTER)
         assertEquals(constants.getString("sigAuth"), Protocol.SIG_AUTH)
         assertEquals(constants.getString("obliviousInfo"), Protocol.OBLIVIOUS_INFO)
@@ -96,7 +98,7 @@ class ProtocolVectorsTest {
         val request = vector.getJSONObject("request")
 
         val payload = Protocol.registrationSigningPayload(
-            username = request.getString("username"),
+            usernameHash = Protocol.unb64(request.getString("usernameHash")),
             deviceId = request.getLong("deviceId"),
             registrationId = request.getLong("registrationId"),
             identityKey = Protocol.unb64(request.getString("identityKey")),
@@ -134,6 +136,57 @@ class ProtocolVectorsTest {
             hex(padded.copyOfRange(4, 4 + payload.size)),
         )
         assertContentEquals(unhex(vector.getString("roundTripHex")), Protocol.unpad(padded))
+
+        // Payload padding, applied before encryption. If one implementation
+        // pads and the other does not, the two still interoperate perfectly --
+        // and their envelopes are still distinguishable by length, which is the
+        // entire defect this was written to close. Nothing else in the system
+        // would notice, so the vector is what notices.
+        val payloadPadded = Protocol.padPayload("{\"v\":1,\"body\":\"salom\"}".toByteArray(Charsets.UTF_8))
+        assertEquals(vector.getInt("payloadPaddedLength"), payloadPadded.size)
+        assertEquals(vector.getString("payloadPaddedHeadHex"), hex(payloadPadded.copyOfRange(0, 24)))
+        assertEquals(
+            vector.getString("payloadPaddedTailHex"),
+            hex(payloadPadded.copyOfRange(payloadPadded.size - 8, payloadPadded.size)),
+        )
+    }
+
+    @Test
+    fun `the backup row digest matches the reference implementation`() {
+        val vector = vectors.getJSONObject("backupRows")
+        val rowsJson = vector.getJSONArray("rows")
+        val rows = (0 until rowsJson.length()).map { index ->
+            val row = rowsJson.getJSONObject(index)
+            Protocol.BackupRow(
+                table = row.getString("table"),
+                id = row.getString("id"),
+                value = unhex(row.getString("valueHex")),
+            )
+        }
+
+        assertEquals(vector.getString("digestHex"), hex(Protocol.backupRowsDigest(rows)))
+        assertEquals(vector.getString("emptyDigestHex"), hex(Protocol.backupRowsDigest(emptyList())))
+
+        // The two properties the digest exists for: order is bound, and a
+        // removed row changes the answer. Dropping `identities` is the attack —
+        // it strips the pinned contact keys and a restore would otherwise
+        // succeed in silence.
+        val reordered = listOf(rows[1], rows[0], rows[2])
+        assertEquals(vector.getString("reorderedDigestHex"), hex(Protocol.backupRowsDigest(reordered)))
+        assertTrue(
+            hex(Protocol.backupRowsDigest(reordered)) != hex(Protocol.backupRowsDigest(rows)),
+            "reordering the rows must change the digest",
+        )
+
+        val withoutIdentities = rows.filterNot { it.table == "identities" }
+        assertEquals(
+            vector.getString("withoutIdentitiesDigestHex"),
+            hex(Protocol.backupRowsDigest(withoutIdentities)),
+        )
+        assertTrue(
+            hex(Protocol.backupRowsDigest(withoutIdentities)) != hex(Protocol.backupRowsDigest(rows)),
+            "dropping the pinned identity rows must change the digest",
+        )
     }
 
     @Test
@@ -170,6 +223,31 @@ class ProtocolVectorsTest {
         // client, would have found out the hard way.
         val opened = Vault.open(key, aad, sealed)
         assertEquals(vector.getString("plaintextHex"), hex(opened))
+    }
+
+    @Test
+    fun `the recovery signing payload matches the reference implementation`() {
+        val vector = vectors.getJSONObject("recoverySigning")
+
+        val payload = Protocol.recoverySigningPayload(
+            phoneNumber = vector.getString("phoneNumber"),
+            code = vector.getString("code"),
+            registrationId = vector.getLong("registrationId"),
+            identityKey = unhex(vector.getString("identityKeyHex")),
+            signedPreKeyId = vector.getLong("signedPreKeyId"),
+            signedPreKeyPublic = unhex(vector.getString("signedPreKeyPublicHex")),
+            kyberPreKeyId = vector.getLong("kyberPreKeyId"),
+            kyberPreKeyPublic = unhex(vector.getString("kyberPreKeyPublicHex")),
+            timestamp = vector.getLong("timestamp"),
+        )
+
+        // A disagreement here would not be visible as a disagreement. The
+        // gateway would simply refuse every recovery as a bad signature, on a
+        // route somebody only reaches after losing their phone.
+        assertEquals(
+            vector.getString("payloadSha256Hex"),
+            hex(java.security.MessageDigest.getInstance("SHA-256").digest(payload)),
+        )
     }
 
     @Test
@@ -218,9 +296,12 @@ class ProtocolVectorsTest {
         assertEquals(expected.getLong("nonce"), decoded.nonce)
         assertContentEquals(content, decoded.content)
     }
-}
+
+
 
 /** Behaviour that is not vector-driven but must still hold. */
+}
+
 class ProtocolInvariantsTest {
 
     @Test
@@ -230,6 +311,28 @@ class ProtocolInvariantsTest {
         assertEquals(Protocol.pad(short).size, Protocol.pad(long).size)
         assertContentEquals(short, Protocol.unpad(Protocol.pad(short)))
         assertContentEquals(long, Protocol.unpad(Protocol.pad(long)))
+    }
+
+    @Test
+    fun `a padded payload is one constant size and still parses as JSON`() {
+        val short = Protocol.padPayload("{\"body\":\"ha\"}".toByteArray(Charsets.UTF_8))
+        val long = Protocol.padPayload(("{\"body\":\"" + "x".repeat(3000) + "\"}").toByteArray(Charsets.UTF_8))
+
+        assertEquals(Protocol.PADDED_PAYLOAD_BYTES, short.size)
+        assertEquals(short.size, long.size)
+
+        // Trailing spaces, so a receiver that knows nothing about padding still
+        // reads the message. This is what lets the change go out without a
+        // flag day against builds already on people's phones.
+        assertEquals("ha", JSONObject(String(short, Charsets.UTF_8)).getString("body"))
+        assertEquals(3000, JSONObject(String(long, Charsets.UTF_8)).getString("body").length)
+    }
+
+    @Test
+    fun `payload padding refuses a payload that does not fit`() {
+        assertFailsWith<IllegalArgumentException> {
+            Protocol.padPayload(ByteArray(Protocol.PADDED_PAYLOAD_BYTES + 1))
+        }
     }
 
     @Test
@@ -269,10 +372,13 @@ class ProtocolInvariantsTest {
 
     @Test
     fun `usernames are ascii only`() {
-        assertTrue(Protocol.isValidUsername("dilnoza_az"))
-        assertTrue(!Protocol.isValidUsername("ab"))
-        assertTrue(!Protocol.isValidUsername("Dilnoza"))
+        // The ASCII rule lives on the nickname, which is the half a person picks
+        // and therefore the half a homoglyph attack would target. Whole handles
+        // are libsignal's format and are checked in the client module, beside it.
+        assertTrue(Protocol.isValidNickname("dilnoza_az"))
+        assertTrue(!Protocol.isValidNickname("ab"))
+        assertTrue(!Protocol.isValidNickname("Dilnoza"))
         // Cyrillic 'а' rendering as Latin 'a' is exactly the attack this blocks.
-        assertTrue(!Protocol.isValidUsername("pаypal"))
+        assertTrue(!Protocol.isValidNickname("pаypal"))
     }
 }

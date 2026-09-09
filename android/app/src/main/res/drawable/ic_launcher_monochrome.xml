@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The themed icon, for Android 13 and up.
+
+  The system discards these colours and tints the shape to the wallpaper
+  palette, so this has to be a silhouette rather than the artwork.
+
+  The crescent survives that intact, which is the advantage of a head that is a
+  lune rather than a disc: the cavity stays open, so the wink, the eye and the
+  smile are holes in nothing rather than holes in a filled face, and they still
+  read once the system has flattened everything to one colour. A solid head
+  would come back as a coin.
+
+  Geometry is identical to ic_launcher_foreground; only the paint differs.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- The crescent head. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M58.48,12.24 A42,42 0 1 1 12.24,58.48 A38,38 0 1 0 58.48,12.24 Z"/>
+
+    <!-- The wink. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M35.0,37.4 L45.8,42.3 L35.4,47.2"/>
+
+    <!-- The open eye. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M60.2,42.0m0,-6.4a5.2,6.4 0 1,0 0,12.8a5.2,6.4 0 1,0 0,-12.8z"/>
+
+    <!-- The smile. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34.5,56.5 C40,78 58,78 63.5,56.5 C58,68 40,68 34.5,56.5 Z"/>
+</vector>

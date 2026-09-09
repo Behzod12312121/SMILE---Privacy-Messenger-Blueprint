@@ -18,6 +18,10 @@ data class Conversation(
     /** True when the last message in the preview was sent by us. */
     val outgoing: Boolean = false,
     val previewPrefix: String? = null,
+    /** Gateway-assigned avatar seed; null until this device has the keys. */
+    val avatarSeed: ByteArray? = null,
+    /** The emoji this device shows for the contact. Local, never sent. */
+    val avatarEmoji: String? = null,
 )
 
 /**
@@ -28,6 +32,24 @@ data class Conversation(
  * accepted the envelope; whether it was fetched, decrypted or read is
  * unknowable from this device, and a second tick would be an invention.
  */
+/**
+ * A group as the list needs it.
+ *
+ * [members] are ACIs, which is what the protocol carries; the screen resolves
+ * them to names for display. Kept as identifiers here so a row can be drawn
+ * before every member's name is known -- a group can contain somebody this
+ * device has never exchanged a message with, and waiting on that would leave
+ * the row blank.
+ */
+data class Group(
+    val groupId: String,
+    val name: String,
+    val members: List<String>,
+    val preview: String = "",
+    val timestamp: String = "",
+    val unread: Int = 0,
+)
+
 enum class DeliveryState { Sending, Sent, Failed }
 
 /** Whether the delivery socket is up. Shown so silence is never ambiguous. */
@@ -42,13 +64,24 @@ data class Message(
     /** Null for incoming messages, where it has no meaning. */
     val delivery: DeliveryState? = null,
     val replyTo: ReplyContext? = null,
+    /**
+     * Who wrote it, in a group. Null in a private thread, where the question
+     * has one answer and printing it on every bubble is noise.
+     */
+    val author: String? = null,
 )
 
 @Immutable
 data class ReplyContext(val author: String, val excerpt: String)
 
 @Immutable
-data class Contact(val aci: String, val displayName: String, val username: String)
+data class Contact(
+    val aci: String,
+    val displayName: String,
+    val username: String,
+    /** Gateway-assigned avatar seed; null until this device has the keys. */
+    val avatarSeed: ByteArray? = null,
+)
 
 /** A day divider or an inline system notice, laid out between messages. */
 sealed interface TimelineItem {
@@ -64,7 +97,21 @@ data class Account(
     val screenLock: Boolean,
     /** What a notification is allowed to say, already in words. */
     val notificationDetail: String,
+    /** The number this account can be taken back with, or null if none is set. */
+    val recoveryNumber: String?,
     val language: String,
     val theme: String,
     val buildHash: String,
+    /** Gateway-assigned avatar seed; null until this device has the keys. */
+    val avatarSeed: ByteArray? = null,
+    /** Whether opening the app asks for a fingerprint. */
+    val requireUnlock: Boolean = false,
+    /** Empty when the device can do it; otherwise why it cannot. */
+    val unlockUnavailable: String? = null,
+    /** True when the vault key sits in a discrete secure element. */
+    val strongBox: Boolean = false,
+    /** True when the device has secure-element hardware at all. */
+    val strongBoxHardware: Boolean = false,
+    /** Self-reported environment read: "clean" or a flag list. */
+    val environment: String = "clean",
 )

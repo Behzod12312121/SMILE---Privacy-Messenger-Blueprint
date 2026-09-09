@@ -41,6 +41,9 @@ class MillygramSession private constructor(
     val aci: String get() = client.aci
     val username: String get() = client.username
 
+    private val _groups = MutableStateFlow<List<GroupSummary>>(emptyList())
+    val groups: StateFlow<List<GroupSummary>> = _groups.asStateFlow()
+
     private val _conversations = MutableStateFlow<List<ConversationState>>(emptyList())
     val conversations: StateFlow<List<ConversationState>> = _conversations.asStateFlow()
 
@@ -91,6 +94,7 @@ class MillygramSession private constructor(
 
     init {
         _conversations.value = loadContacts()
+        refreshGroups()
     }
 
     /**
@@ -132,16 +136,35 @@ class MillygramSession private constructor(
                     subscription = client.connect(
                         onMessage = { incoming ->
                             learnName(incoming.senderAci, incoming.senderUsername)
-                            record(
-                                peerAci = incoming.senderAci,
-                                body = incoming.body,
-                                sentAt = incoming.sentAt,
-                                outgoing = false,
-                            )
+                            // A message that arrived in a group belongs to the
+                            // group's thread, not to a private one with whoever
+                            // sent it. Filing it by sender put group traffic in
+                            // a one-to-one conversation, where it read as a
+                            // private message from that person -- and the reply
+                            // would have gone only to them.
+                            val group = incoming.groupId
+                            val sender = contactName(incoming.senderAci)
+                            if (group != null) {
+                                refreshGroups()
+                                record(
+                                    peerAci = groupThreadKey(group),
+                                    body = incoming.body,
+                                    sentAt = incoming.sentAt,
+                                    outgoing = false,
+                                    author = sender,
+                                )
+                            } else {
+                                record(
+                                    peerAci = incoming.senderAci,
+                                    body = incoming.body,
+                                    sentAt = incoming.sentAt,
+                                    outgoing = false,
+                                )
+                            }
                             _arrivals.tryEmit(
                                 Arrival(
-                                    peerAci = incoming.senderAci,
-                                    username = contactName(incoming.senderAci),
+                                    peerAci = if (group != null) groupThreadKey(group) else incoming.senderAci,
+                                    username = if (group != null) groupLabel(group) else sender,
                                     body = incoming.body,
                                 ),
                             )
@@ -182,6 +205,117 @@ class MillygramSession private constructor(
         client.exportBackup(passphrase)
     }
 
+    /**
+     * Attaches or removes the number this account can be recovered with.
+     *
+     * See MillygramClient.attachRecoveryNumber for what it costs. The screen
+     * that offers this has to say the same thing, because the gateway learning
+     * a number is the one part of this app that is not deniable.
+     */
+    suspend fun attachRecoveryNumber(phoneNumber: String) = withContext(Dispatchers.IO) {
+        client.attachRecoveryNumber(phoneNumber)
+    }
+
+    suspend fun detachRecoveryNumber() = withContext(Dispatchers.IO) {
+        client.detachRecoveryNumber()
+    }
+
+    /** The number attached to this account, or null if none is. */
+    val recoveryNumber: String? get() = client.recoveryNumber
+
+    /**
+     * The avatar seed the gateway published for an account.
+     *
+     * Null until this device has fetched that account's keys, which is the only
+     * place a seed ever comes from. Nothing a peer sends can reach this.
+     */
+    fun avatarSeed(peerAci: String): ByteArray? = client.avatarSeed(peerAci)
+
+    /**
+     * Which emoji stands in for a contact — on this device, and nowhere else.
+     *
+     * This is a note the phone's owner keeps about somebody, in the same way
+     * the local name for a contact is. It is never sent, never received, and
+     * has no field on the wire: a peer cannot see what they look like here, and
+     * cannot influence it. That is what keeps an animated avatar from being the
+     * profile-photo problem again — the bytes ship in the APK, and the only
+     * person who chooses among them is holding the phone.
+     *
+     * Stored through putAppData, so it lives in the encrypted vault with
+     * everything else and leaves with the account when the account is erased.
+     */
+    fun avatarEmoji(peerAci: String): String =
+        client.getAppData(avatarEmojiKey(peerAci)) ?: DEFAULT_AVATAR_EMOJI
+
+    fun setAvatarEmoji(peerAci: String, emojiId: String) {
+        client.putAppData(avatarEmojiKey(peerAci), emojiId)
+        // The list holds this on its state so it is not read per row per frame,
+        // which means the write has to reach that copy too or the choice would
+        // not appear until the next launch.
+        _conversations.update { list ->
+            list.map { if (it.aci == peerAci) it.copy(avatarEmoji = emojiId) else it }
+        }
+    }
+
+    private fun avatarEmojiKey(peerAci: String) = "avatarEmoji:$peerAci"
+
+    /** How well this device protects the vault, and how its environment looks. */
+    fun securityPosture(): MillygramClient.SecurityPosture = client.securityPosture()
+
+    /** This account's own seed, so the profile shows what contacts see. */
+    val ownAvatarSeed: ByteArray? get() = client.ownAvatarSeed
+
+    /**
+     * Whether opening the app asks for a fingerprint.
+     *
+     * Off by default. The people this app is for are coming from Telegram,
+     * which asks for nothing, and a messenger that demands a fingerprint before
+     * it will show a message is a messenger they stop using. It is offered
+     * rather than imposed, and the people who want it know why they want it.
+     */
+    private val _requireUnlock = MutableStateFlow(client.getAppData(REQUIRE_UNLOCK) == "1")
+
+    /**
+     * Observable, not a plain property read.
+     *
+     * The screen that gates the app has to react the moment this is switched
+     * on. Reading it once at composition meant turning it on and switching away
+     * left the app unlocked when you came back — the observer that re-locks was
+     * never registered, because at the time it was composed the setting was
+     * still off. A lock with that hole in it is worse than no lock, because the
+     * user believes it is there.
+     */
+    val requireUnlockState: StateFlow<Boolean> = _requireUnlock.asStateFlow()
+
+    var requireUnlock: Boolean
+        get() = _requireUnlock.value
+        set(value) {
+            client.putAppData(REQUIRE_UNLOCK, if (value) "1" else "0")
+            _requireUnlock.value = value
+        }
+
+    /**
+     * Clears the unread mark for a conversation.
+     *
+     * Called when its screen is open, not when a notification is tapped: the
+     * mark is about whether the messages have been looked at, and a tap that
+     * opens the app is the start of that rather than proof of it.
+     */
+    fun markRead(peerAci: String) {
+        var changed = false
+        _conversations.update { list ->
+            list.map { conversation ->
+                if (conversation.aci == peerAci && conversation.unread > 0) {
+                    changed = true
+                    conversation.copy(unread = 0)
+                } else {
+                    conversation
+                }
+            }
+        }
+        if (changed) _conversations.value.firstOrNull { it.aci == peerAci }?.let(::persist)
+    }
+
     /** What notifications are allowed to say. Persisted, so it survives a restart. */
     var notificationDetail: NotificationDetail
         get() = NotificationDetail.parse(client.getAppData(NOTIFY_DETAIL))
@@ -198,6 +332,60 @@ class MillygramSession private constructor(
      * silently dropped message — a messenger that loses text without saying so
      * is worse than one that reports the failure.
      */
+    /** Every group this device is in, newest state first. */
+    fun refreshGroups() {
+        _groups.value = runCatching {
+            client.groups().map { GroupSummary(it.groupId, it.name, it.members) }
+        }.getOrDefault(emptyList())
+    }
+
+    /** The group's name, or its identifier if this device has not learned one. */
+    private fun groupLabel(groupId: String): String =
+        runCatching { client.group(groupId)?.name }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: groupId.take(8)
+
+    suspend fun createGroup(name: String, memberAcis: List<String>): String = withContext(Dispatchers.IO) {
+        val created = client.createGroup(name, memberAcis)
+        refreshGroups()
+        created.groupId
+    }
+
+    suspend fun setGroupMembers(groupId: String, members: List<String>) = withContext(Dispatchers.IO) {
+        client.updateGroupMembers(groupId, members)
+        refreshGroups()
+    }
+
+    /**
+     * Leaves a group and drops its thread from this device.
+     *
+     * There is no "delete for everyone" and there cannot be: a group is a label
+     * a few clients agree to use, held by each of them, with no server-side
+     * object to remove. Leaving tells the others so they stop addressing this
+     * device, and forgets the local copy. The others keep theirs.
+     */
+    suspend fun leaveGroup(groupId: String) = withContext(Dispatchers.IO) {
+        client.leaveGroup(groupId)
+        val key = groupThreadKey(groupId)
+        client.putAppData("$HISTORY_PREFIX$key", "")
+        _conversations.update { current -> current.filterNot { it.aci == key } }
+        persistIndex()
+        refreshGroups()
+    }
+
+    suspend fun sendToGroup(groupId: String, body: String) = withContext(Dispatchers.IO) {
+        val key = groupThreadKey(groupId)
+        // Recorded before the network is touched, for the same reason a private
+        // send is: the message stays on screen if the send fails.
+        val id = record(key, body, System.currentTimeMillis(), outgoing = true, delivery = Delivery.Sending)
+        try {
+            client.sendToGroup(groupId, body)
+            markDelivery(key, id, Delivery.Sent)
+        } catch (failure: Throwable) {
+            markDelivery(key, id, Delivery.Failed)
+            throw failure
+        }
+    }
+
     suspend fun send(recipient: String, body: String) = withContext(Dispatchers.IO) {
         val target = if (recipient.contains('-')) {
             recipient
@@ -274,8 +462,13 @@ class MillygramSession private constructor(
         sentAt: Long,
         outgoing: Boolean,
         delivery: Delivery? = null,
+        author: String? = null,
     ): Long {
         val id = nextId.getAndIncrement()
+        // A group thread has no ACI behind it, so none of the per-contact
+        // lookups below mean anything for one: there is no avatar seed to fetch
+        // and no contact name to take. Its label is the group's name instead.
+        val groupId = groupIdOf(peerAci)
         _conversations.update { current ->
             val existing = current.firstOrNull { it.aci == peerAci }
             val message = MessageState(
@@ -284,6 +477,7 @@ class MillygramSession private constructor(
                 sentAt = sentAt,
                 outgoing = outgoing,
                 delivery = delivery,
+                author = author,
             )
 
             // The name is taken fresh every time rather than only when the
@@ -291,13 +485,27 @@ class MillygramSession private constructor(
             // the first one carried none, or the sender was a stranger until
             // now — would otherwise be stored and never shown, leaving the
             // conversation labelled with the identifier for good.
+            // Only what arrives counts. Echoing our own sends into the unread
+            // total would light up the row for a message the user just typed.
+            val bump = if (message.outgoing) 0 else 1
+            val label = if (groupId != null) groupLabel(groupId) else contactName(peerAci)
+            val seed = if (groupId != null) null else client.avatarSeed(peerAci)
+            val emoji = if (groupId != null) GROUP_AVATAR_EMOJI else avatarEmoji(peerAci)
             val updated = existing?.copy(
-                username = contactName(peerAci),
+                username = label,
+                avatarSeed = existing.avatarSeed ?: seed,
+                avatarEmoji = emoji,
                 messages = existing.messages + message,
+                unread = existing.unread + bump,
+                groupId = groupId,
             ) ?: ConversationState(
                 aci = peerAci,
-                username = contactName(peerAci),
+                username = label,
+                avatarSeed = seed,
+                avatarEmoji = emoji,
                 messages = listOf(message),
+                unread = bump,
+                groupId = groupId,
             )
 
             (current.filterNot { it.aci == peerAci } + updated).sortedByDescending {
@@ -360,6 +568,8 @@ class MillygramSession private constructor(
     private fun persist(conversation: ConversationState) {
         val entry = JSONObject().apply {
             put("username", conversation.username)
+            put("unread", conversation.unread)
+            conversation.groupId?.let { put("groupId", it) }
             put(
                 "messages",
                 JSONArray().apply {
@@ -372,6 +582,7 @@ class MillygramSession private constructor(
                                 put("body", message.body)
                                 put("sentAt", message.sentAt)
                                 put("outgoing", message.outgoing)
+                                message.author?.let { put("author", it) }
                                 // A message still in flight when the process
                                 // died did not reach the relay, so it reloads
                                 // as failed rather than as quietly sent.
@@ -422,6 +633,12 @@ class MillygramSession private constructor(
         return ConversationState(
             aci = aci,
             username = entry.getString("username"),
+            // optString, not getString: every entry written before groups
+            // existed lacks this key, and reading those must not throw.
+            groupId = entry.optString("groupId").takeIf { it.isNotBlank() },
+            avatarSeed = if (groupIdOf(aci) != null) null else client.avatarSeed(aci),
+            avatarEmoji = if (groupIdOf(aci) != null) GROUP_AVATAR_EMOJI else avatarEmoji(aci),
+            unread = entry.optInt("unread", 0),
             messages = (0 until messages.length()).map { index ->
                 val message = messages.getJSONObject(index)
                 MessageState(
@@ -429,6 +646,7 @@ class MillygramSession private constructor(
                     body = message.getString("body"),
                     sentAt = message.getLong("sentAt"),
                     outgoing = message.getBoolean("outgoing"),
+                    author = message.optString("author").takeIf { it.isNotBlank() },
                     delivery = when (message.optString("delivery")) {
                         "sent" -> Delivery.Sent
                         "failed" -> Delivery.Failed
@@ -467,12 +685,41 @@ class MillygramSession private constructor(
     }
 
     companion object {
+        /**
+         * What a contact shows before anybody chooses anything for them.
+         *
+         * The brand's own face, so an account that has never been customised
+         * still looks like this app rather than like a placeholder.
+         */
+        const val DEFAULT_AVATAR_EMOJI = "grinning_face"
+
+        /** Groups get one mark rather than a per-contact choice; there is no one face for several people. */
+        const val GROUP_AVATAR_EMOJI = "people_hugging"
+
         private const val MAX_HISTORY = 500
         private const val HISTORY_PREFIX = "history:"
+
+        /**
+         * A group thread's key in the same history store private threads use.
+         *
+         * A group is not an account and has no ACI, but it is a thread with
+         * messages, an unread count and a place in the same sorted list. Giving
+         * it a key in the same namespace means the storage, the index, the
+         * retention cap and the migration all work on it unchanged. The prefix
+         * is what keeps the two apart, and an ACI is a UUID so it can never
+         * collide with one.
+         */
+        private const val GROUP_THREAD_PREFIX = "group:"
+
+        fun groupThreadKey(groupId: String) = "$GROUP_THREAD_PREFIX$groupId"
+
+        fun groupIdOf(threadKey: String): String? =
+            threadKey.removePrefix(GROUP_THREAD_PREFIX).takeIf { threadKey.startsWith(GROUP_THREAD_PREFIX) }
         private const val HISTORY_INDEX = "history:index"
         /** The single blob every conversation used to share. Read once, then emptied. */
         private const val LEGACY_HISTORY = "history"
         private const val NOTIFY_DETAIL = "notifyDetail"
+        private const val REQUIRE_UNLOCK = "requireUnlock"
         private const val MIN_BACKOFF_MS = 1_000L
         private const val MAX_BACKOFF_MS = 30_000L
         private const val DATABASE = "millygram.db"
@@ -525,6 +772,27 @@ class MillygramSession private constructor(
             ),
         )
 
+        /**
+         * Takes away this device's standing permission to open the vault.
+         *
+         * The account is not touched. What is destroyed is the shortcut — the
+         * keystore-wrapped copy of the data key that lets a launch skip the
+         * passphrase — so that after this the only way back in is the thing
+         * the user knows rather than the thing the phone holds.
+         *
+         * That distinction is the entire value of the lock in Settings. The
+         * phone is handed over unlocked in this country as a matter of routine,
+         * at a checkpoint or across a desk, and a lock that leaves the device
+         * still able to open the vault by itself is a lock that a second tap on
+         * the app icon walks straight through. Zeroing the key in memory is not
+         * enough for that; the wrapping on disk has to go too.
+         *
+         * Blocking: it writes to SQLite and talks to the keystore, so it wants
+         * a background thread. See MillygramClient.forgetDeviceKey for what it
+         * costs and what it deliberately leaves alone.
+         */
+        fun forgetDeviceKey(context: Context) = MillygramClient.forgetDeviceKey(context, DATABASE)
+
         fun exists(context: Context): Boolean =
             context.getDatabasePath(DATABASE).let(File::exists)
 
@@ -550,6 +818,40 @@ class MillygramSession private constructor(
             MillygramSession(client, CoroutineScope(SupervisorJob() + Dispatchers.IO))
         }
 
+        /** Asks the gateway to text a code to a number. */
+        suspend fun startRecovery(serverUrl: String, phoneNumber: String) = withContext(Dispatchers.IO) {
+            MillygramClient.startRecovery(serverUrl, phoneNumber)
+        }
+
+        /**
+         * Takes back a handle on a new handset, with new keys.
+         *
+         * The result is deliberately not the old account: no history, and a
+         * safety number every contact will see change. See
+         * MillygramClient.recoverWithCode.
+         */
+        suspend fun recover(
+            context: Context,
+            phoneNumber: String,
+            code: String,
+            passphrase: String,
+            serverUrl: String,
+            obliviousRelayUrl: String? = null,
+        ): MillygramSession = withContext(Dispatchers.IO) {
+            val client = MillygramClient.recoverWithCode(
+                MillygramOptions(
+                    context = context,
+                    databaseName = DATABASE,
+                    passphrase = passphrase,
+                    serverUrl = serverUrl,
+                    obliviousRelayUrl = obliviousRelayUrl,
+                ),
+                phoneNumber,
+                code,
+            )
+            MillygramSession(client, CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        }
+
         suspend fun open(
             context: Context,
             passphrase: String,
@@ -571,9 +873,22 @@ class MillygramSession private constructor(
 }
 
 data class ConversationState(
+    /** The thread key: a peer's ACI, or [MillygramSession.groupThreadKey] for a group. */
     val aci: String,
     val username: String,
+    /** Gateway-assigned; null until this device has fetched the peer's keys. */
+    val avatarSeed: ByteArray? = null,
+    /**
+     * The emoji this device shows for the contact. Carried on the state rather
+     * than read per row, because a list asks for this on every frame it scrolls
+     * and the vault is encrypted.
+     */
+    val avatarEmoji: String = MillygramSession.DEFAULT_AVATAR_EMOJI,
     val messages: List<MessageState>,
+    /** Set when this thread is a group rather than one other person. */
+    val groupId: String? = null,
+    /** Arrived since this conversation was last opened. */
+    val unread: Int = 0,
 )
 
 /**
@@ -592,6 +907,18 @@ data class MessageState(
     val outgoing: Boolean,
     /** Null for incoming messages, where it has no meaning. */
     val delivery: Delivery? = null,
+    /**
+     * Who wrote it, for a group thread. Null in a private one, where the
+     * question has one answer and printing it on every bubble is noise.
+     */
+    val author: String? = null,
+)
+
+/** A group as the list screen needs it: enough to draw a row, nothing more. */
+data class GroupSummary(
+    val groupId: String,
+    val name: String,
+    val members: List<String>,
 )
 
 /** The single-blob history split into the per-conversation form that replaced it. */

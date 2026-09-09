@@ -160,3 +160,46 @@ fun BellGlyph(color: Color, modifier: Modifier = Modifier, size: Dp = 20.dp) {
         )
     }
 }
+
+/** A handset, for the recovery-number row. */
+@Composable
+fun PhoneGlyph(color: Color, modifier: Modifier = Modifier, size: Dp = 20.dp) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = Stroke(width = w * 0.09f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+        drawRoundRect(
+            color = color,
+            topLeft = androidx.compose.ui.geometry.Offset(w * 0.28f, h * 0.14f),
+            size = androidx.compose.ui.geometry.Size(w * 0.44f, h * 0.72f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.10f),
+            style = stroke,
+        )
+        // The speaker slot, which is what reads as "phone" at 20dp more than
+        // the outline does.
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(w * 0.43f, h * 0.26f),
+            end = androidx.compose.ui.geometry.Offset(w * 0.57f, h * 0.26f),
+            strokeWidth = w * 0.09f,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/** A downward chevron, for the jump-to-latest pill. */
+@Composable
+fun ChevronDownGlyph(color: Color, modifier: Modifier = Modifier, size: Dp = 16.dp) {
+    Canvas(modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = Stroke(width = w * 0.14f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        val path = Path().apply {
+            moveTo(w * 0.24f, h * 0.38f)
+            lineTo(w * 0.50f, h * 0.64f)
+            lineTo(w * 0.76f, h * 0.38f)
+        }
+        drawPath(path, color, style = stroke)
+    }
+}

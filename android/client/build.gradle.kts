@@ -31,6 +31,20 @@ android {
         testInstrumentationRunnerArguments["gatewayUrl"] =
             (findProperty("mgTestGateway") as String? ?: "http://localhost:8443")
         consumerProguardFiles("consumer-rules.pro")
+
+        // The native self-protection library. arm64 and armv7 cover every
+        // real handset in the market; x86_64 is only the emulator, kept so the
+        // library loads there too rather than throwing on load.
+        externalNativeBuild {
+            cmake { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // Compile with the installed JDK (21 here), emit JDK 17 bytecode. Android's
@@ -50,6 +64,14 @@ android {
         }
     }
 
+    // No BuildConfig here, deliberately. The two build-time security settings
+    // this module understands — the trust root a build expects the gateway to
+    // present, and the SPKI pins for the gateway and relay hosts — are
+    // parameters on MillygramOptions rather than generated constants, because a
+    // library that read them from its own BuildConfig would be reading whatever
+    // the library's build said and not whatever the app was built to talk to.
+    // The app module already funnels its deployment properties into
+    // buildConfigField; it passes them down through the options object.
     buildFeatures { buildConfig = false }
 
     // Unit tests exercise the pure-JVM half of this module (transport shapes,

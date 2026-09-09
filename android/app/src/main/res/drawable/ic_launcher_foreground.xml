@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher mark: a horned crescent, a chevron wink, and a smile.
+
+  THE HEAD IS A LUNE, NOT A RING WITH A GAP CUT IN IT.
+
+  Two circles that genuinely intersect, and the crescent is the region of one
+  that the other does not cover. That is what produces horns: the boundary
+  arrives at the two intersection points from both sides at once, so it comes to
+  a real point. A ring with a slice removed cannot do this — its terminals are
+  cuts, and they read as cuts however thin they are made.
+
+    outer   r 42 about (54,54)
+    inner   r 38 about (49.05,49.05), offset 7 toward 225 degrees
+    horns   (58.48,12.24) and (12.24,58.48)
+    opening 102 degrees across the upper left
+    weight  11 at the thick point, 0 at both horns
+
+  Offsetting by 7 rather than by the 4 that would make the circles tangent is
+  the whole difference. At 4 they touch and you get a closed ring; past that
+  they cross, and the shape opens by itself. Every number above falls out of
+  those two circles — nothing is positioned by eye.
+
+  THE WINK IS A CHEVRON.
+
+  A stroked one, deliberately, where the smile is a drawn shape. The reference
+  marks in this style all draw the closed eye as a rounded chevron and they are
+  right to: a lens shape reads as a lid, but a chevron reads as a squeeze, which
+  is what a wink actually is. Round cap and join, because a chevron with mitred
+  ends is a warning sign, not a face.
+
+  The open eye is a tall oval rather than a circle. A circle is a dot; an oval
+  has an axis, and an axis reads as an eye.
+
+  Colour: gold on deep navy, one light source at the upper left, so the thin end
+  of the crescent is where the light lands.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- The crescent head: outer arc the long way, inner arc back through the middle. -->
+    <path android:pathData="M58.48,12.24 A42,42 0 1 1 12.24,58.48 A38,38 0 1 0 58.48,12.24 Z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="20" android:startY="14"
+                android:endX="88" android:endY="94"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFE7B4"/>
+                <item android:offset="0.5" android:color="#FFF6BB60"/>
+                <item android:offset="1" android:color="#FFE0871F"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- The wink: a rounded chevron. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M35.0,37.4 L45.8,42.3 L35.4,47.2">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:strokeColor">
+            <gradient
+                android:startX="34" android:startY="36"
+                android:endX="66" android:endY="50"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFE7B4"/>
+                <item android:offset="1" android:color="#FFF2AE4C"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- The open eye: a tall oval, not a dot. -->
+    <path android:pathData="M60.2,42.0m0,-6.4a5.2,6.4 0 1,0 0,12.8a5.2,6.4 0 1,0 0,-12.8z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="34" android:startY="36"
+                android:endX="66" android:endY="50"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFE7B4"/>
+                <item android:offset="1" android:color="#FFF2AE4C"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- The smile, drawn rather than stroked: swelling at the centre, points at the tips. -->
+    <path android:pathData="M34.5,56.5 C40,78 58,78 63.5,56.5 C58,68 40,68 34.5,56.5 Z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="34" android:startY="56"
+                android:endX="64" android:endY="76"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFBD08E"/>
+                <item android:offset="1" android:color="#FFE29223"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

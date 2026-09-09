@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MillyGram</string>
+    <!-- The brand. Not localised: a name is a name in every language. -->
+    <string name="app_name">Smile</string>
     <string name="channel_delivery">Xabarlarni kutish</string>
     <string name="channel_messages">Yangi xabarlar</string>
     <string name="notification_listening">Xabarlar kutilmoqda</string>

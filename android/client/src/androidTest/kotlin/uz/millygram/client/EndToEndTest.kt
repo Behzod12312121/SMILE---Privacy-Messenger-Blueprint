@@ -73,16 +73,22 @@ class EndToEndTest {
 
     @Before
     fun checkGatewayIsReachable() {
+        // Fifteen seconds, not three. Three was right when the gateway was
+        // always a localhost adb-reverse tunnel; against a real deployment the
+        // first request pays DNS, a TLS handshake and a tunnel hop, and on an
+        // emulator that alone can exceed three seconds. A timeout tuned for
+        // loopback fails a perfectly healthy remote gateway and reports it as
+        // "not running", which sends you looking in the wrong place.
         val reachable = runCatching {
             java.net.URL("$gatewayUrl/v1/trust-root").openConnection().apply {
-                connectTimeout = 3000
-                readTimeout = 3000
+                connectTimeout = 15_000
+                readTimeout = 15_000
             }.getInputStream().use { it.readBytes().isNotEmpty() }
         }.getOrDefault(false)
 
         assertTrue(
-            "no gateway at $gatewayUrl — run `npm run relay` on the host and " +
-                "`adb reverse tcp:8443 tcp:8443` for this device first",
+            "no gateway at $gatewayUrl — start it, and if it is a local one, " +
+                "run `adb reverse tcp:8443 tcp:8443` for this device first",
             reachable,
         )
     }
@@ -114,6 +120,68 @@ class EndToEndTest {
             "sealed sender must still resolve the real author",
             alisher.aci,
             received[0].senderAci,
+        )
+    }
+
+    @Test
+    fun aGroupDeliversToEveryMemberAndStopsAtOneRemoved() {
+        val alisher = register("grpal")
+        val nodira = register("grpno")
+        val bekzod = register("grpbe")
+
+        // A group can only be sent to members whose delivery bucket is known,
+        // and a bucket is only ever learned from a message — never by asking
+        // the gateway, because that question would disclose who is about to
+        // talk to whom.
+        for (peer in listOf(nodira, bekzod)) {
+            alisher.send(peer.username, "salom")
+            peer.catchUp { }
+            peer.send(alisher.username, "salom")
+        }
+        alisher.catchUp { }
+
+        val group = alisher.createGroup("Ish", listOf(nodira.aci, bekzod.aci))
+        for (peer in listOf(nodira, bekzod)) peer.catchUp { }
+
+        assertEquals("nodira should see the group", 1, nodira.groups().size)
+        assertEquals("bekzod should see the group", 1, bekzod.groups().size)
+        assertEquals("the group should hold three members", 3, nodira.groups()[0].members.size)
+
+        val body = "Guruh uchun maxfiy xabar — Gʻayrat, maʼlumot"
+        alisher.sendToGroup(group.groupId, body)
+
+        for (peer in listOf(nodira, bekzod)) {
+            val got = mutableListOf<MillygramClient.IncomingMessage>()
+            peer.catchUp { got += it }
+            val forGroup = got.filter { it.groupId == group.groupId }
+            assertEquals("each member receives exactly one group message", 1, forGroup.size)
+            assertEquals("the body survives byte for byte", body, forGroup[0].body)
+            assertEquals("sealed sender still names the real author", alisher.aci, forGroup[0].senderAci)
+        }
+
+        // Removing somebody must take effect on the very next message. This is
+        // the property that pairwise fan-out buys over a shared group key,
+        // where the removed member keeps reading until every sender rotates.
+        alisher.updateGroupMembers(group.groupId, listOf(nodira.aci))
+        for (peer in listOf(nodira, bekzod)) peer.catchUp { }
+        assertEquals("a removed member must lose the group", 0, bekzod.groups().size)
+
+        alisher.sendToGroup(group.groupId, "faqat qolganlar uchun")
+
+        val nodiraGot = mutableListOf<MillygramClient.IncomingMessage>()
+        nodira.catchUp { nodiraGot += it }
+        assertEquals(
+            "a remaining member must still receive",
+            1,
+            nodiraGot.count { it.groupId == group.groupId },
+        )
+
+        val bekzodGot = mutableListOf<MillygramClient.IncomingMessage>()
+        bekzod.catchUp { bekzodGot += it }
+        assertEquals(
+            "a removed member must receive nothing further",
+            0,
+            bekzodGot.count { it.groupId == group.groupId },
         )
     }
 

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The status bar mark: the chevron wink, the oval eye and the smile, without the
+  crescent head.
+
+  WHY THE HEAD COMES OFF HERE.
+
+  The launcher mark's crescent tapers to a point at both horns — that is what
+  makes it a lune rather than a ring, and it is the best thing about it. Scaled
+  to this canvas the same shape is 2.4dp at its thickest and 0 at the horns,
+  passing through 0.6dp across most of its length. At mdpi that is sub-pixel: it
+  would not render as a thin crescent, it would render as a dashed one, and a
+  broken icon reads as a bug rather than as a mark.
+
+  So the head drops and the face stays. This is not a second logo — it is the
+  same face, at the size where the frame around it stops being drawable. Every
+  identity that ships on Android makes this cut somewhere; making it on purpose
+  is the difference between a system and an accident.
+
+  Android keeps only the alpha channel here and paints the result a flat colour,
+  so all of this is one silhouette. That is also why the features can never sit
+  inside a *filled* head: they would be holes in a shape the system fills solid
+  and would disappear. Only a ring or a lune can hold features, and only above
+  the size where its thin end survives.
+
+    wink      chevron, 2.1dp stroke, round cap and join
+    open eye  oval 2.1 x 2.6 — an axis, where a circle is only a dot
+    smile     drawn shape, 3.6dp at the centre, points at the tips
+    extent    x 4.95 to 18.1, y 6.35 to 18.7, inside the 22dp safe box
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <!-- The wink: a rounded chevron, the same shape the launcher mark uses. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.1"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6.0,7.4 L10.4,9.5 L6.2,11.6"/>
+
+    <!-- The open eye. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16.0,10.0m0,-2.6a2.1,2.6 0 1,0 0,5.2a2.1,2.6 0 1,0 0,-5.2z"/>
+
+    <!-- The smile: drawn, so it carries its weight at the centre and thins to the corners. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6.4,13.6 C8.4,20.4 15.6,20.4 17.6,13.6 C15.6,17.2 8.4,17.2 6.4,13.6 Z"/>
+</vector>

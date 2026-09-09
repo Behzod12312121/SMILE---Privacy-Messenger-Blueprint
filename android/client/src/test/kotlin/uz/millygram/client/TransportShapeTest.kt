@@ -81,7 +81,7 @@ class TransportShapeTest {
         }.toString())
 
         val response = transport.register(JSONObject().apply {
-            put("username", "dilnoza_az")
+            put("usernameHash", Protocol.b64(ByteArray(32) { 7 }))
             put("deviceId", 1)
         })
 
@@ -209,13 +209,50 @@ class TransportShapeTest {
 
     @Test
     fun `an error response becomes a TransportError carrying the server code`() {
-        enqueueJson(400, """{"error":"insufficient_proof_of_work","difficulty":16}""")
+        // Not a submission: any other refusal must still surface unchanged.
+        enqueueJson(409, """{"error":"duplicate_submission"}""")
 
         val failure = assertFailsWith<TransportError> {
             transport.submit(1, ByteArray(Protocol.PADDED_ENVELOPE_BYTES), 4)
         }
-        assertEquals(400, failure.status)
+        assertEquals(409, failure.status)
+        assertEquals("duplicate_submission", failure.code)
+    }
+
+    @Test
+    fun `a bucket that asks a higher price is paid rather than reported`() {
+        // A bucket whose shared inbound budget is draining charges extra work
+        // and names the figure. There is no sender identity to throttle -- a
+        // submission is anonymous by construction -- so the price is the only
+        // lever the gateway has, and an honest sender that treated the quote as
+        // a refusal would leave the flooder holding sixteen accounts down.
+        enqueueJson(400, """{"error":"insufficient_proof_of_work","difficulty":12}""")
+        enqueueJson(202, "")
+
+        transport.submit(1, ByteArray(Protocol.PADDED_ENVELOPE_BYTES), 4)
+
+        take()
+        val paid = take()
+        val nonce = JSONObject(paid.body.readUtf8()).getLong("nonce")
+        assertTrue(
+            Protocol.verifyProofOfWork(1, ByteArray(Protocol.PADDED_ENVELOPE_BYTES), nonce, 12),
+            "the second attempt must carry work at the difficulty the gateway asked for",
+        )
+    }
+
+    @Test
+    fun `a price that keeps rising is reported rather than paid forever`() {
+        // Two raises inside one send means the bucket is draining faster than a
+        // handset can answer. Paying without limit is how a sender becomes the
+        // flooder's battery, so the second quote is surfaced, not solved.
+        enqueueJson(400, """{"error":"insufficient_proof_of_work","difficulty":12}""")
+        enqueueJson(400, """{"error":"insufficient_proof_of_work","difficulty":14}""")
+
+        val failure = assertFailsWith<TransportError> {
+            transport.submit(1, ByteArray(Protocol.PADDED_ENVELOPE_BYTES), 4)
+        }
         assertEquals("insufficient_proof_of_work", failure.code)
+        assertEquals(14, failure.requiredDifficulty)
     }
 
     @Test
@@ -223,10 +260,16 @@ class TransportShapeTest {
         enqueueAuth()
         enqueueJson(200, """{"aci":"90ce12e4-2da3-4998-a924-1b948ae1ff42","deviceId":1,"bucketId":5}""")
 
-        val entry = transport.lookupUsername("gayrat")
+        val entry = transport.lookupUsername("gayrat.42")
         take(); take()
 
-        assertEquals("/v1/directory/gayrat", take().path)
+        // The path carries the hash and nothing else. This is the assertion
+        // that the name never leaves the device: if a future change put the
+        // handle back into the URL, the gateway would be learning who was being
+        // looked up again and this is what would notice.
+        val path = take().path.orEmpty()
+        assertEquals("/v1/directory/" + Protocol.b64(Handles.hash("gayrat.42")), path)
+        assertTrue(!path.contains("gayrat"), "the handle must not appear in the request")
         assertEquals("90ce12e4-2da3-4998-a924-1b948ae1ff42", entry.aci)
         assertEquals(5L, entry.bucketId)
     }
