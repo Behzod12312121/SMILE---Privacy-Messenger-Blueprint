@@ -4,7 +4,7 @@ import {
   SenderCertificate,
   ServerCertificate,
 } from '@signalapp/libsignal-client';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { OBLIVIOUS_INFO, SENDER_CERT_TTL_MS, bytes, type Bytes } from '@millygram/protocol';
 import type { Store } from './db.js';
 
@@ -12,6 +12,7 @@ const STATE_TRUST_ROOT = 'trust_root_private';
 const STATE_SIGNING_KEY = 'sender_cert_signing_private';
 const STATE_OBLIVIOUS_KEY = 'oblivious_gateway_private';
 const STATE_AUTH_KEY = 'auth_token_hmac';
+const STATE_NUMBER_KEY = 'recovery_number_hmac';
 const SERVER_CERT_KEY_ID = 1;
 
 /**
@@ -27,7 +28,22 @@ export class ServerIdentity {
     private readonly obliviousPrivate: PrivateKey,
     private readonly serverCertificate: ServerCertificate,
     readonly authKey: Buffer,
+    private readonly numberKey: Buffer,
   ) {}
+
+  /**
+   * A keyed hash of a phone number, which is the only form one is stored in.
+   *
+   * Keyed rather than plain because a phone number carries so little entropy
+   * that an unkeyed digest of one is a lookup table away from the original.
+   * This makes the stored column useless to somebody who takes the database
+   * alone. It does not, and cannot, protect against somebody who takes this key
+   * too — a gateway that can answer "which account has this number" necessarily
+   * holds that link.
+   */
+  numberMac(phoneNumber: string): Buffer {
+    return createHmac('sha256', this.numberKey).update(phoneNumber, 'utf8').digest();
+  }
 
   static load(store: Store): ServerIdentity {
     const trustRootPrivate = loadOrCreateKey(store, STATE_TRUST_ROOT);
@@ -46,7 +62,20 @@ export class ServerIdentity {
       trustRootPrivate,
     );
 
-    return new ServerIdentity(trustRootPrivate, signingPrivate, obliviousPrivate, serverCertificate, authKey);
+    let numberKey = store.getState(STATE_NUMBER_KEY);
+    if (!numberKey) {
+      numberKey = randomBytes(32);
+      store.putState(STATE_NUMBER_KEY, numberKey);
+    }
+
+    return new ServerIdentity(
+      trustRootPrivate,
+      signingPrivate,
+      obliviousPrivate,
+      serverCertificate,
+      authKey,
+      Buffer.from(numberKey),
+    );
   }
 
   get trustRootPublic(): PublicKey {

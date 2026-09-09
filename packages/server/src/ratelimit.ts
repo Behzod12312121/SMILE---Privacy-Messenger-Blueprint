@@ -40,6 +40,20 @@ export class RateLimiter {
     return true;
   }
 
+  /**
+   * How many tokens a key has right now, without spending one.
+   *
+   * Used to price a submission rather than to admit it: an empty bucket is the
+   * signal that somebody is filling it, and the answer to that is to make the
+   * next submission cost more, not only to refuse it. Reading must not consume,
+   * or asking the price would itself be a way to drain the budget.
+   */
+  remaining(key: string, now = Date.now()): number {
+    const bucket = this.buckets.get(key);
+    if (!bucket) return this.capacity;
+    return Math.min(this.capacity, bucket.tokens + ((now - bucket.updatedAt) / 1000) * this.refillPerSecond);
+  }
+
   /** Drops buckets that have fully refilled, so idle keys leave no trace. */
   sweep(now = Date.now()): void {
     const fullAfterMs = (this.capacity / this.refillPerSecond) * 1000;

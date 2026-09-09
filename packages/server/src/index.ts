@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { b64 } from '@millygram/protocol';
-import { buildApp } from './app.js';
+import { type RecoveryCodeSender, buildApp } from './app.js';
 import { Authenticator } from './auth.js';
 import { loadConfig, type ServerConfig } from './config.js';
 import { Store } from './db.js';
@@ -12,6 +12,7 @@ export { startObliviousRelay, createObliviousRelay, RELAY_USER_AGENT } from './o
 export type { ObliviousRelayOptions, RunningRelay } from './oblivious-relay.js';
 export { loadConfig, DEFAULT_RATE_LIMITS } from './config.js';
 export type { ServerConfig, RateLimits, Bucket } from './config.js';
+export { DEFAULT_INBOUND_POW_ESCALATION } from './config.js';
 
 
 export interface RunningServer {
@@ -21,17 +22,30 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-export async function startServer(overrides: Partial<ServerConfig> = {}): Promise<RunningServer> {
+export interface ServerOverrides extends Partial<ServerConfig> {
+  /** See RecoveryCodeSender. Without one, recovery codes go nowhere. */
+  sendRecoveryCode?: RecoveryCodeSender;
+}
+
+export async function startServer(overrides: ServerOverrides = {}): Promise<RunningServer> {
   const config = loadConfig(overrides);
   const store = new Store(config.databasePath);
   const identity = ServerIdentity.load(store);
   const authenticator = new Authenticator(store, identity, config.authTokenTtlMs);
   const hub = new SocketHub(store, authenticator, config.maxSocketBufferBytes);
-  const app = buildApp({ config, store, identity, authenticator, hub });
+  const app = buildApp({
+    config,
+    store,
+    identity,
+    authenticator,
+    hub,
+    ...(overrides.sendRecoveryCode ? { sendRecoveryCode: overrides.sendRecoveryCode } : {}),
+  });
 
   const sweep = setInterval(() => {
     store.sweepEnvelopes(config.envelopeTtlMs);
     store.sweepChallenges();
+    store.sweepRecoveryCodes();
   }, config.sweepIntervalMs);
   sweep.unref();
 
@@ -55,6 +69,58 @@ export async function startServer(overrides: Partial<ServerConfig> = {}): Promis
 }
 
 /**
+ * Where recovery codes actually go.
+ *
+ * The gateway refuses to guess. Without one of these set, `startServer` logs an
+ * error on every request and drops the code, because a recovery route that
+ * accepts everything and delivers nothing looks healthy from the outside while
+ * being entirely broken for the only person who needs it.
+ *
+ * `MG_RECOVERY_SMS_URL` is the production path: every SMS aggregator in this
+ * market takes an HTTP POST, so the shape is a POST of `{phoneNumber, code}`
+ * with an optional bearer token, and adapting it to a specific provider is a
+ * change to one function rather than to the gateway.
+ *
+ * `MG_RECOVERY_CODE_STDOUT` is for development and prints the code to the
+ * console. It is deliberately not the fallback and never the default: anyone
+ * who can read the log could then take over any account with a number attached.
+ * It announces itself loudly at startup so it cannot be left on by accident.
+ */
+function configureRecoverySender(): RecoveryCodeSender | undefined {
+  const url = process.env['MG_RECOVERY_SMS_URL'];
+  if (url !== undefined && url !== '') {
+    const token = process.env['MG_RECOVERY_SMS_TOKEN'];
+    return async (phoneNumber, code) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token !== undefined && token !== '' ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ phoneNumber, code }),
+      });
+      // Thrown, not swallowed: /v1/recovery/start awaits this, and a failure
+      // the user never hears about leaves them waiting for a code that is not
+      // coming.
+      if (!response.ok) throw new Error(`recovery sms gateway returned ${response.status}`);
+    };
+  }
+
+  if (process.env['MG_RECOVERY_CODE_STDOUT'] === '1') {
+    process.stderr.write(
+      'WARNING: MG_RECOVERY_CODE_STDOUT is set. Recovery codes are printed to this ' +
+        'console, so anyone who can read it can take over any account with a number ' +
+        'attached. Never set this in production.\n',
+    );
+    return (phoneNumber, code) => {
+      process.stdout.write(`recovery code for ${phoneNumber}: ${code}\n`);
+    };
+  }
+
+  return undefined;
+}
+
+/**
  * Whether this module was run directly rather than imported.
  *
  * The hand-rolled version of this check built `file://` + a slash-swapped path,
@@ -69,7 +135,8 @@ const isEntrypoint =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
-  const server = await startServer();
+  const sender = configureRecoverySender();
+  const server = await startServer(sender ? { sendRecoveryCode: sender } : {});
   process.stdout.write(`millygram relay listening on ${server.url}\ntrust root: ${server.trustRoot}\n`);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
