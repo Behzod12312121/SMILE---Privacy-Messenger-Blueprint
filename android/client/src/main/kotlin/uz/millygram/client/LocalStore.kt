@@ -6,6 +6,8 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.io.Closeable
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
+import uz.millygram.protocol.Protocol
 import uz.millygram.protocol.Vault
 
 /**
@@ -133,16 +135,20 @@ class LocalStore private constructor(
         kek.fill(0)
 
         val rows = JSONArray()
+        val digestRows = mutableListOf<Protocol.BackupRow>()
         for (table in ALLOWED_TABLES) {
             val idColumn = idColumnFor(table)
             val valueColumn = valueColumnFor(table)
             db.query(table, arrayOf(idColumn, valueColumn), null, null, null, null, null).use { cursor ->
                 while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val value = cursor.getBlob(1)
+                    digestRows += Protocol.BackupRow(table, id, value)
                     rows.put(
                         JSONObject().apply {
                             put("table", table)
-                            put("id", cursor.getString(0))
-                            put("value", android.util.Base64.encodeToString(cursor.getBlob(1), BASE64))
+                            put("id", id)
+                            put("value", android.util.Base64.encodeToString(value, BASE64))
                         },
                     )
                 }
@@ -157,12 +163,32 @@ class LocalStore private constructor(
             put("salt", android.util.Base64.encodeToString(salt, BASE64))
             put("wrappedKey", android.util.Base64.encodeToString(wrapped, BASE64))
             put("rows", rows)
+            // Binds the list to the data key. Without it the rows could be
+            // deleted from the file and the restore would still succeed.
+            put(
+                "rowsSeal",
+                android.util.Base64.encodeToString(
+                    Vault.seal(dek, Vault.aad("backup", "rows"), Protocol.backupRowsDigest(digestRows)),
+                    BASE64,
+                ),
+            )
         }.toString().toByteArray(Charsets.UTF_8)
     }
 
     companion object {
         private const val SCHEMA_VERSION = 2
-        private const val BACKUP_FORMAT = "millygram-backup-v1"
+        private const val BACKUP_FORMAT = "millygram-backup-v2"
+
+        /**
+         * The format before the row list was authenticated. Recognised only so
+         * that somebody holding one is told what happened, rather than being
+         * shown "not a MillyGram backup" for a file that plainly is one.
+         *
+         * Not accepted. Accepting it would hand back the whole point: an
+         * attacker who can touch the file could strip the seal, relabel it as
+         * the older format, and have the stripped rows restored anyway.
+         */
+        private const val BACKUP_FORMAT_UNAUTHENTICATED = "millygram-backup-v1"
         private const val BASE64 = android.util.Base64.NO_WRAP
 
         private fun idColumnFor(table: String): String = when (table) {
@@ -188,7 +214,15 @@ class LocalStore private constructor(
          */
         fun importBackup(context: Context, name: String, backup: ByteArray, passphrase: String) {
             val parsed = JSONObject(String(backup, Charsets.UTF_8))
-            require(parsed.optString("format") == BACKUP_FORMAT) { "not a MillyGram backup" }
+            val format = parsed.optString("format")
+            require(format == BACKUP_FORMAT) {
+                if (format == BACKUP_FORMAT_UNAUTHENTICATED) {
+                    "this backup was written before backups authenticated their contents, so rows could be " +
+                        "removed from it without detection; export a fresh one from the device that holds the account"
+                } else {
+                    "not a MillyGram backup"
+                }
+            }
 
             val salt = android.util.Base64.decode(parsed.getString("salt"), BASE64)
             val wrapped = android.util.Base64.decode(parsed.getString("wrappedKey"), BASE64)
@@ -197,16 +231,57 @@ class LocalStore private constructor(
                 r = parsed.getInt("kdfR"),
                 p = parsed.getInt("kdfP"),
             )
+            // Checked before scrypt is asked to honour them. These numbers come
+            // out of the file, and scrypt sizes its working memory from them.
+            Vault.requireSaneKdf(params)
 
             // Checked before anything is written, so a wrong passphrase costs
             // nothing but the derivation.
             val kek = Vault.deriveKey(passphrase, salt, params)
-            try {
+            val dek = try {
                 Vault.open(kek, Vault.aad("vault", "dek"), wrapped)
             } catch (t: Throwable) {
                 throw IllegalStateException("wrong passphrase for this backup", t)
             } finally {
                 kek.fill(0)
+            }
+
+            // The row list is checked as a whole, before a single row is
+            // written.
+            //
+            // Every row is sealed on its own, so nobody without the passphrase
+            // can read one or write a new one. Removing rows needed neither:
+            // the file simply carried fewer and the restore finished without
+            // complaint. Stripping the `identities` rows is the damaging
+            // version — they are the pinned contact keys, and a device that
+            // comes back without them silently accepts the next key it is
+            // offered for a contact it had already verified.
+            val rows = parsed.getJSONArray("rows")
+            try {
+                val expected = Vault.open(
+                    dek,
+                    Vault.aad("backup", "rows"),
+                    android.util.Base64.decode(parsed.getString("rowsSeal"), BASE64),
+                )
+                val actual = Protocol.backupRowsDigest(
+                    (0 until rows.length()).map { index ->
+                        val row = rows.getJSONObject(index)
+                        Protocol.BackupRow(
+                            table = row.getString("table"),
+                            id = row.getString("id"),
+                            value = android.util.Base64.decode(row.getString("value"), BASE64),
+                        )
+                    },
+                )
+                require(MessageDigest.isEqual(expected, actual)) {
+                    "this backup's contents do not match what it was exported with"
+                }
+            } catch (e: IllegalArgumentException) {
+                throw e
+            } catch (t: Throwable) {
+                throw IllegalStateException("this backup's contents could not be verified", t)
+            } finally {
+                dek.fill(0)
             }
 
             require(!context.getDatabasePath(name).exists()) {
@@ -222,7 +297,6 @@ class LocalStore private constructor(
                     "INSERT INTO vault (id, kdf_salt, wrapped_key, kdf_n, kdf_r, kdf_p) VALUES (1, ?, ?, ?, ?, ?)",
                     arrayOf<Any>(salt, wrapped, params.n, params.r, params.p),
                 )
-                val rows = parsed.getJSONArray("rows")
                 for (index in 0 until rows.length()) {
                     val row = rows.getJSONObject(index)
                     val table = row.getString("table")
@@ -303,6 +377,33 @@ class LocalStore private constructor(
                     }
                 }
             }.getOrDefault(false)
+        }
+
+        /**
+         * Removes the device wrapping, leaving the vault itself untouched.
+         *
+         * Only the `device_key` column is nulled. The data key is still there,
+         * still wrapped under the scrypt-derived key from the passphrase, and
+         * every row of every table is exactly as it was — so this costs the
+         * user nothing except being asked for their passphrase again. That is
+         * the whole point: somebody who is about to hand their phone over wants
+         * the app to stop opening itself, not to lose their account.
+         *
+         * Deleting the keystore entry is the other half and belongs to
+         * [DeviceKey]; either half alone would leave the shortcut dead, and
+         * doing both means nothing is left on this device that could rebuild
+         * it. Called on a device that has no vault, or a vault that never had a
+         * wrapping, this does nothing and reports success, because both are
+         * already the state it is trying to produce.
+         */
+        fun clearDeviceKey(context: Context, name: String) {
+            if (!context.getDatabasePath(name).exists()) return
+            runCatching {
+                val helper = OpenHelper(context.applicationContext, name)
+                helper.writableDatabase.use { db ->
+                    db.execSQL("UPDATE vault SET device_key = NULL WHERE id = 1")
+                }
+            }
         }
 
         /**

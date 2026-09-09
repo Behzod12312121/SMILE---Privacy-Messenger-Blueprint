@@ -1,5 +1,5 @@
 import { Fingerprint, PrivateKey } from '@signalapp/libsignal-client';
-import { createCipheriv } from 'node:crypto';
+import { createCipheriv, createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -8,6 +8,8 @@ import {
   OBLIVIOUS_INFO,
   OBLIVIOUS_REQUEST_BYTES,
   PADDED_ENVELOPE_BYTES,
+  PADDED_PAYLOAD_BYTES,
+  MAX_GROUP_REVISION,
   SIG_AUTH,
   SIG_REGISTER,
   authSigningPayload,
@@ -17,10 +19,24 @@ import {
   decodeObliviousRequest,
   encodeObliviousRequest,
   pad,
+  padPayload,
+  recoverySigningPayload,
   registrationSigningPayload,
   solveProofOfWork,
   solveRegistrationWork,
   unpad,
+  backupRowsDigest,
+  usernameHash,
+  usernameProof,
+  createUsernameLink,
+  USERNAME_LINK_PREFIX,
+  USERNAME_LINK_BYTES,
+  usernameCandidates,
+  NICKNAME_MIN_LENGTH,
+  NICKNAME_MAX_LENGTH,
+  USERNAME_HASH_BYTES,
+  USERNAME_PROOF_BYTES,
+  isValidUsername,
   verifyProofOfWork,
   verifyRegistrationWork,
 } from '@millygram/protocol';
@@ -58,7 +74,8 @@ const canonicalCases = [
 ];
 
 const registrationVector = {
-  username: 'dilnoza_az',
+  usernameHash: b64(usernameHash('dilnoza_az.42')),
+  usernameProof: b64(usernameProof('dilnoza_az.42')),
   deviceId: 1,
   registrationId: 11261,
   identityKey: b64(patterned(33, 1)),
@@ -101,6 +118,20 @@ const fingerprint = Fingerprint.new(
   .displayableFingerprint()
   .toString();
 
+// Recovery is signed by a key the gateway has never seen, over a payload both
+// implementations have to build identically. Getting it wrong would not fail
+// loudly — it would refuse every recovery as a bad signature.
+const recoveryPayload = recoverySigningPayload({
+  phoneNumber: '+998901234567',
+  code: '123456',
+  registrationId: 4242,
+  identityKey: b64(patterned(33, 29)),
+  signedPreKey: { keyId: 7, publicKey: b64(patterned(33, 31)), signature: b64(patterned(64, 37)) },
+  kyberPreKey: { keyId: 9, publicKey: b64(patterned(1568, 41)), signature: b64(patterned(64, 43)) },
+  oneTimePreKeys: [],
+  timestamp: 1788000000000,
+} as never);
+
 const powContent = patterned(PADDED_ENVELOPE_BYTES, 9);
 const powBucket = 7;
 const powDifficulty = 12;
@@ -122,6 +153,7 @@ const obliviousContent = patterned(PADDED_ENVELOPE_BYTES, 11);
 const obliviousEncoded = encodeObliviousRequest(4294967295, 123456, obliviousContent);
 
 const paddedSample = pad(utf8('Ertaga soat 10 da uchrashamizmi?'));
+const payloadSample = padPayload('{"v":1,"body":"salom"}');
 
 const vectors = {
   generatedBy: '@millygram/protocol',
@@ -130,6 +162,8 @@ const vectors = {
     paddedEnvelopeBytes: PADDED_ENVELOPE_BYTES,
     obliviousRequestBytes: OBLIVIOUS_REQUEST_BYTES,
     maxPlaintextBytes: MAX_PLAINTEXT_BYTES,
+    paddedPayloadBytes: PADDED_PAYLOAD_BYTES,
+    maxGroupRevision: MAX_GROUP_REVISION,
     sigRegister: SIG_REGISTER,
     sigAuth: SIG_AUTH,
     obliviousInfo: OBLIVIOUS_INFO,
@@ -187,6 +221,95 @@ const vectors = {
     lengthPrefixHex: hex(paddedSample.subarray(0, 4)),
     payloadAtOffset4Hex: hex(paddedSample.subarray(4, 4 + utf8('Ertaga soat 10 da uchrashamizmi?').length)),
     roundTripHex: hex(unpad(paddedSample)),
+
+    // Payload padding, applied before encryption so the sealed length stops
+    // tracking the message. Both sides must produce these bytes exactly: if one
+    // pads and the other does not, the two are still interoperable but their
+    // envelopes are distinguishable by length, which is the whole defect.
+    payloadPaddedLength: payloadSample.length,
+    payloadPaddedHeadHex: hex(payloadSample.subarray(0, 24)),
+    payloadPaddedTailHex: hex(payloadSample.subarray(payloadSample.length - 8)),
+  },
+
+  // The digest that binds a backup's row list. The backup itself is written
+  // only on Android; this vector is what makes the two implementations agree
+  // about it, because a disagreement here means a restore silently rejects a
+  // genuine backup — or worse, accepts a stripped one.
+  // The directory slice a name falls in. Both sides must agree exactly: a
+  // client that computes a different slice from the gateway simply never finds
+  // the person it is looking for.
+  // The handle itself. A discriminator the two sides format or parse differently
+  // is an account that one implementation can reach and the other cannot.
+  // Handles, as libsignal computes them. Both sides call the same Rust code, so
+  // these agree by construction rather than by two people reading a spec — but
+  // they are pinned anyway, because "the same library" is an assumption that
+  // stops being true the moment the two versions drift apart.
+  username: {
+    nicknameMinLength: NICKNAME_MIN_LENGTH,
+    nicknameMaxLength: NICKNAME_MAX_LENGTH,
+    hashBytes: USERNAME_HASH_BYTES,
+    proofBytes: USERNAME_PROOF_BYTES,
+    cases: ['dilnoza.42', 'aziz_test.07', 'a_b_c.1234'].map((username) => ({
+      username,
+      hashHex: hex(usernameHash(username)),
+    })),
+    // A proof generated on this side must verify on the other. This is the one
+    // that would catch a genuine divergence: the hash is deterministic and easy
+    // to agree on, and the proof is where the zero-knowledge machinery lives.
+    proof: {
+      username: 'dilnoza.42',
+      hashHex: hex(usernameHash('dilnoza.42')),
+      proofHex: hex(usernameProof('dilnoza.42')),
+    },
+    // Refused as handles. Dilnoza.42 is refused by this project rather than by
+    // libsignal, which allows upper case; two handles that differ only in case
+    // would be two accounts nobody could tell apart.
+    // A bare nickname matters most: it is what somebody
+    // types when they have been told half a name.
+    invalid: ['dilnoza', 'dilnoza.', '.42', 'Dilnoza.42', ''],
+    // Candidates are random, so only their shape can be pinned.
+    candidateCount: usernameCandidates('dilnoza').length,
+  },
+
+  // An invite made here must open there. The link carries its own key, so this
+  // is the whole of what an introduction depends on — if the two sides disagree
+  // about the framing, an invite simply does nothing when it is tapped, which
+  // is the kind of failure nobody reports as a bug.
+  usernameLink: {
+    prefix: USERNAME_LINK_PREFIX,
+    packedBytes: USERNAME_LINK_BYTES,
+    username: 'dilnoza.42',
+    link: createUsernameLink('dilnoza.42'),
+  },
+
+  backupRows: {
+    rows: [
+      { table: 'identities', id: '4bc3e0fd-0000-4000-8000-000000000001', valueHex: hex(utf8('pinned-key-a')) },
+      { table: 'sessions', id: '4bc3e0fd-0000-4000-8000-000000000002.1', valueHex: hex(utf8('session-b')) },
+      { table: 'meta', id: 'aci', valueHex: hex(utf8('4bc3e0fd-0000-4000-8000-000000000003')) },
+    ],
+    digestHex: hex(
+      backupRowsDigest([
+        { table: 'identities', id: '4bc3e0fd-0000-4000-8000-000000000001', value: utf8('pinned-key-a') },
+        { table: 'sessions', id: '4bc3e0fd-0000-4000-8000-000000000002.1', value: utf8('session-b') },
+        { table: 'meta', id: 'aci', value: utf8('4bc3e0fd-0000-4000-8000-000000000003') },
+      ]),
+    ),
+    // Order is part of the digest, and so is dropping a row.
+    reorderedDigestHex: hex(
+      backupRowsDigest([
+        { table: 'sessions', id: '4bc3e0fd-0000-4000-8000-000000000002.1', value: utf8('session-b') },
+        { table: 'identities', id: '4bc3e0fd-0000-4000-8000-000000000001', value: utf8('pinned-key-a') },
+        { table: 'meta', id: 'aci', value: utf8('4bc3e0fd-0000-4000-8000-000000000003') },
+      ]),
+    ),
+    withoutIdentitiesDigestHex: hex(
+      backupRowsDigest([
+        { table: 'sessions', id: '4bc3e0fd-0000-4000-8000-000000000002.1', value: utf8('session-b') },
+        { table: 'meta', id: 'aci', value: utf8('4bc3e0fd-0000-4000-8000-000000000003') },
+      ]),
+    ),
+    emptyDigestHex: hex(backupRowsDigest([])),
   },
   proofOfWork: {
     bucketId: powBucket,
@@ -201,6 +324,18 @@ const vectors = {
     localIdentityHex: hex(fpLocalKey.serialize()),
     remoteIdentityHex: hex(fpRemoteKey.serialize()),
     digits: fingerprint,
+  },
+  recoverySigning: {
+    phoneNumber: '+998901234567',
+    code: '123456',
+    registrationId: 4242,
+    identityKeyHex: hex(patterned(33, 29)),
+    signedPreKeyId: 7,
+    signedPreKeyPublicHex: hex(patterned(33, 31)),
+    kyberPreKeyId: 9,
+    kyberPreKeyPublicHex: hex(patterned(1568, 41)),
+    timestamp: 1788000000000,
+    payloadSha256Hex: hex(createHash('sha256').update(recoveryPayload).digest()),
   },
   vault: {
     keyHex: hex(vaultKey),

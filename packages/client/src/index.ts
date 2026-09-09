@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   ErrorCode,
   Fingerprint,
@@ -16,7 +17,13 @@ import { z } from 'zod';
 import {
   DEVICE_ID_PRIMARY,
   MAX_PLAINTEXT_BYTES,
+  PADDED_PAYLOAD_BYTES,
+  padPayload,
   Username,
+  isValidUsername,
+  usernameCandidates,
+  usernameHash,
+  usernameProof,
   ONE_TIME_PREKEY_BATCH,
   REGISTRATION_POW_DIFFICULTY,
   solveRegistrationWork,
@@ -25,7 +32,7 @@ import {
   PREKEY_ROTATION_MS,
   b64,
   bytes,
-  isValidUsername,
+  isValidNickname,
   pad,
   registrationSigningPayload,
   unb64,
@@ -33,6 +40,14 @@ import {
   type PreKeyBundleResponse,
   type RegisterRequest,
   type StoredEnvelope,
+  GROUP_ID_BYTES,
+  MAX_GROUP_MEMBERS,
+  MAX_GROUP_REVISION,
+  MAX_GROUPS,
+  MAX_CURSOR_ADVANCE,
+  GROUP_NAME_MAX,
+  Aci,
+  GroupId,
 } from '@millygram/protocol';
 import { buildStores, LocalStore, type ProtocolStores } from './store.js';
 import {
@@ -66,6 +81,9 @@ const META_KYBER_PREKEY_ID = 'kyberPreKeyId';
 const META_PREKEYS_ROTATED_AT = 'preKeysRotatedAt';
 const META_CURSOR = 'bucketCursor';
 const peerBucketMeta = (aci: string): string => `peerBucket:${aci}`;
+const GROUP_INDEX = 'groups:index';
+const groupMeta = (groupId: string): string => `group:${groupId}`;
+const groupTombstone = (groupId: string): string => `groupGone:${groupId}`;
 
 /**
  * What travels inside the ciphertext. Text only: no attachment field, no MIME
@@ -95,8 +113,44 @@ const MessagePayload = z.object({
    * knowing where to answer never becomes a query the relay can observe.
    */
   bucketId: z.number().int().min(0),
+  /**
+   * Which group this message belongs to, if any.
+   *
+   * Present only inside the ciphertext. The envelope carrying it is
+   * indistinguishable from a one-to-one message: same size, same bucket, same
+   * sealed sender. The gateway therefore cannot tell group traffic from
+   * private traffic, let alone which group, which is the whole reason the
+   * identifier lives here rather than in a field the server could index.
+   */
+  groupId: GroupId.optional(),
+  /**
+   * A group's membership and name, sent when it changes.
+   *
+   * Carried by whoever made the change and applied by everyone who receives
+   * it. There is no server-side record to consult, so this is the only source
+   * of truth — see the warning on applyGroupUpdate about what that means for
+   * a dishonest member.
+   */
+  group: z
+    .object({
+      name: z.string().min(1).max(GROUP_NAME_MAX),
+      members: z.array(Aci).min(1).max(MAX_GROUP_MEMBERS),
+      /** Distinguishes a membership change from someone walking out. */
+      event: z.enum(['update', 'leave']).default('update'),
+      /** Orders concurrent edits; the highest revision seen wins. */
+      revision: z.number().int().min(0).max(MAX_GROUP_REVISION),
+    })
+    .optional(),
 });
 export type MessagePayload = z.infer<typeof MessagePayload>;
+
+/** A group as this device understands it. Held here and nowhere else. */
+export interface GroupState {
+  groupId: string;
+  name: string;
+  members: string[];
+  revision: number;
+}
 
 export interface IncomingMessage {
   senderAci: string;
@@ -106,6 +160,8 @@ export interface IncomingMessage {
   senderUsername: string | null;
   sentAt: number;
   receivedAt: number;
+  /** Set when this arrived in a group rather than a private thread. */
+  groupId: string | null;
 }
 
 export interface ClientOptions {
@@ -145,8 +201,12 @@ export class MillygramClient {
   ) {}
 
   static async register(options: RegisterOptions): Promise<MillygramClient> {
-    if (!isValidUsername(options.username)) {
-      throw new Error('username must be 3-32 characters of a-z, 0-9 or underscore');
+    // What a person registers is the nickname; the gateway appends the
+    // discriminator and hands the whole handle back, because a discriminator the
+    // user chose would be 0001 or their birth year, and the entropy it exists to
+    // add would not be there.
+    if (!isValidNickname(options.username)) {
+      throw new Error('nickname must be 3-32 characters of a-z, 0-9 or underscore');
     }
 
     const store = LocalStore.open(options.databasePath, options.passphrase);
@@ -161,7 +221,6 @@ export class MillygramClient {
     store.setMeta(META_IDENTITY, identity.serialize());
     store.setMetaNumber(META_REGISTRATION_ID, registrationId);
     store.setMetaNumber(META_DEVICE_ID, DEVICE_ID_PRIMARY);
-    store.setMetaString(META_USERNAME, options.username);
 
     const stores = buildStores(store, identity, registrationId);
     const material = await generateInitialKeys(identity, stores);
@@ -173,52 +232,84 @@ export class MillygramClient {
     // connection, throwing away keys nobody has used yet.
     store.setMetaNumber(META_PREKEYS_ROTATED_AT, Date.now());
 
-    const unsigned: Omit<RegisterRequest, 'signature' | 'workNonce'> = {
-      username: options.username,
-      deviceId: DEVICE_ID_PRIMARY,
-      registrationId,
-      identityKey: b64(identity.publicKey.serialize()),
-      signedPreKey: material.signedPreKey,
-      kyberPreKey: material.kyberPreKey,
-      oneTimePreKeys: material.oneTimePreKeys,
-      timestamp: Date.now(),
-    };
-    const payload = registrationSigningPayload(unsigned);
-    const signature = identity.privateKey.sign(payload);
-
+    // Handles the nickname could become, in the order libsignal offered them.
+    // The gateway cannot pick one any more — picking would mean seeing the name
+    // to hash it — so the client walks its own candidates and takes the next
+    // when one is already claimed. Everything about a registration commits to
+    // the hash, so a new candidate means a new signature and a new proof of
+    // work; there is no way to retry a taken name cheaply, and no reason to
+    // want one.
+    const candidates = usernameCandidates(options.username);
     const transport = new Transport(options.serverUrl, null, options.obliviousRelayUrl ?? null);
-    // Registration is charged in CPU rather than to an address. Every user on
-    // an Uzbek mobile network shares a handful of public addresses, so an
-    // address-based limit would ration signups for a whole carrier; work costs
-    // the same wherever it is solved. The retry exists so the gateway can raise
-    // the price during a flood without every installed client breaking.
-    let registered;
+
+    let registered: Awaited<ReturnType<Transport['register']>> | undefined;
+    let username: string | undefined;
     try {
-      let difficulty = REGISTRATION_POW_DIFFICULTY;
-      for (let attempt = 0; ; attempt += 1) {
-        const workNonce = solveRegistrationWork(payload, difficulty);
-        try {
-          registered = await transport.register({
-            ...unsigned,
-            signature: b64(signature),
-            workNonce,
-          });
-          break;
-        } catch (error) {
-          const harder =
-            error instanceof TransportError &&
-            error.code === 'work_required' &&
-            error.requiredDifficulty !== undefined &&
-            error.requiredDifficulty > difficulty;
-          if (!harder || attempt > 0) throw error;
-          difficulty = (error as TransportError).requiredDifficulty!;
+      for (const candidate of candidates) {
+        const unsigned: Omit<RegisterRequest, 'signature' | 'workNonce'> = {
+          usernameHash: b64(usernameHash(candidate)),
+          usernameProof: b64(usernameProof(candidate)),
+          deviceId: DEVICE_ID_PRIMARY,
+          registrationId,
+          identityKey: b64(identity.publicKey.serialize()),
+          signedPreKey: material.signedPreKey,
+          kyberPreKey: material.kyberPreKey,
+          oneTimePreKeys: material.oneTimePreKeys,
+          timestamp: Date.now(),
+        };
+        const payload = registrationSigningPayload(unsigned);
+        const signature = identity.privateKey.sign(payload);
+
+        // Registration is charged in CPU rather than to an address. Every user
+        // on an Uzbek mobile network shares a handful of public addresses, so an
+        // address-based limit would ration signups for a whole carrier; work
+        // costs the same wherever it is solved. The retry exists so the gateway
+        // can raise the price during a flood without every installed client
+        // breaking.
+        let difficulty = REGISTRATION_POW_DIFFICULTY;
+        let taken = false;
+        for (let attempt = 0; ; attempt += 1) {
+          const workNonce = solveRegistrationWork(payload, difficulty);
+          try {
+            registered = await transport.register({
+              ...unsigned,
+              signature: b64(signature),
+              workNonce,
+            });
+            break;
+          } catch (error) {
+            if (error instanceof TransportError && error.code === 'username_taken') {
+              taken = true;
+              break;
+            }
+            const harder =
+              error instanceof TransportError &&
+              error.code === 'work_required' &&
+              error.requiredDifficulty !== undefined &&
+              error.requiredDifficulty > difficulty;
+            if (!harder || attempt > 0) throw error;
+            difficulty = (error as TransportError).requiredDifficulty!;
+          }
         }
+
+        if (!taken) {
+          username = candidate;
+          break;
+        }
+      }
+
+      if (!registered || !username) {
+        throw new Error('every handle offered for that nickname is already taken');
       }
     } catch (error) {
       store.close();
       throw error;
     }
 
+    // The handle this client chose and proved. The gateway holds only its hash
+    // and could not return it, so this is the one copy that exists outside the
+    // people who are told it.
+    store.setMetaString(META_USERNAME, username);
     store.setMetaString(META_ACI, registered.aci);
     store.setMetaString(META_TRUST_ROOT, registered.trustRoot);
     store.setMetaNumber(META_BUCKET_ID, registered.bucketId);
@@ -236,7 +327,7 @@ export class MillygramClient {
       transport,
       identity,
       registered.aci,
-      options.username,
+      username,
       DEVICE_ID_PRIMARY,
       registered.bucketId,
       registered.powDifficulty,
@@ -353,6 +444,23 @@ export class MillygramClient {
   }
 
   async send(recipient: string, body: string): Promise<void> {
+    return this.sendPayload(recipient, body, undefined, undefined);
+  }
+
+  /**
+   * The single path every outgoing message takes, private or group.
+   *
+   * A group message is an ordinary sealed-sender envelope with a group
+   * identifier inside the ciphertext. Nothing about it looks different on the
+   * wire — same size, same bucket, same padding — so the gateway cannot
+   * separate group traffic from private traffic, or tell two groups apart.
+   */
+  private async sendPayload(
+    recipient: string,
+    body: string,
+    groupId: string | undefined,
+    control: MessagePayload['group'],
+  ): Promise<void> {
     if (body.length === 0) throw new Error('message body is empty');
     if (Buffer.byteLength(body, 'utf8') > MAX_PLAINTEXT_BYTES) {
       throw new Error(`message body exceeds ${MAX_PLAINTEXT_BYTES} bytes`);
@@ -375,16 +483,30 @@ export class MillygramClient {
       const bucketId = this.store.getMetaNumber(peerBucketMeta(target.aci));
       if (bucketId === null) throw new Error(`no delivery bucket known for ${target.aci}`);
 
-        const payload: MessagePayload = {
+      const payload: MessagePayload = {
         v: 1,
         body,
         sentAt: Date.now(),
         bucketId: this.bucketId,
         username: this.username,
+        ...(groupId ? { groupId } : {}),
+        ...(control ? { group: control } : {}),
       };
 
+      // Padded to a constant size before sealing, so the ciphertext length --
+      // which the envelope states in the clear, and every bucket member reads --
+      // stops tracking what was written. Checked before the encrypt rather than
+      // after it: pad() used to raise this after the ratchet had already
+      // advanced, spending a message key on a send that then failed.
+      const json = JSON.stringify(payload);
+      if (Buffer.byteLength(json, 'utf8') > PADDED_PAYLOAD_BYTES) {
+        throw new Error(
+          `message does not fit one envelope: ${Buffer.byteLength(json, 'utf8')} bytes of ${PADDED_PAYLOAD_BYTES}`,
+        );
+      }
+
       const sealed = await sealedSenderEncryptMessage(
-        bytes(Buffer.from(JSON.stringify(payload), 'utf8')),
+        padPayload(json),
         address,
         await this.deliveryCertificate(),
         this.stores.session,
@@ -396,6 +518,239 @@ export class MillygramClient {
       // every envelope the same size.
       await this.transport.submit(bucketId, pad(sealed), this.powDifficulty);
     });
+  }
+
+  /* ---- groups ---- */
+
+  /**
+   * Creates a group and tells the members about it.
+   *
+   * The identifier is generated here and registered nowhere. There is no
+   * request to the gateway in this method beyond the ordinary message sends,
+   * because a group is not a thing the gateway has: it is a shared secret
+   * label that a handful of clients agree to put inside their ciphertext.
+   */
+  async createGroup(name: string, memberAcis: string[]): Promise<GroupState> {
+    const members = [...new Set([this.aci, ...memberAcis])];
+    if (members.length > MAX_GROUP_MEMBERS) {
+      throw new Error(`a group may hold at most ${MAX_GROUP_MEMBERS} members`);
+    }
+    if (name.length === 0 || name.length > GROUP_NAME_MAX) {
+      throw new Error(`a group name must be 1-${GROUP_NAME_MAX} characters`);
+    }
+
+    const groupId = b64(randomBytes(GROUP_ID_BYTES));
+    const group: GroupState = { groupId, name, members, revision: 1 };
+    this.saveGroup(group);
+    await this.announceGroup(group);
+    return group;
+  }
+
+  /** Every group this device knows about. */
+  groups(): GroupState[] {
+    const index = this.store.getMetaString(GROUP_INDEX);
+    if (!index) return [];
+    const ids = JSON.parse(index) as string[];
+    return ids.map((id) => this.group(id)).filter((g): g is GroupState => g !== null);
+  }
+
+  group(groupId: string): GroupState | null {
+    const raw = this.store.getMetaString(groupMeta(groupId));
+    return raw ? (JSON.parse(raw) as GroupState) : null;
+  }
+
+  /**
+   * Sends to every member except this device.
+   *
+   * One padded envelope per member, because the gateway cannot fan a message
+   * out to people it is not allowed to know about. That is the cost of the
+   * property, and it is why the member cap exists.
+   *
+   * Deliberately not a single ciphertext shared between members: each envelope
+   * is its own ratchet step with its own forward secrecy, so removing somebody
+   * from a group removes their ability to read the next message immediately,
+   * with no key rotation to remember and no window in which a removed member
+   * can still decrypt.
+   */
+  async sendToGroup(groupId: string, body: string): Promise<void> {
+    const group = this.group(groupId);
+    if (!group) throw new Error(`unknown group ${groupId}`);
+    await this.fanOut(group, body, undefined);
+  }
+
+  /** Adds or removes members and tells everyone, old and new. */
+  async updateGroupMembers(groupId: string, members: string[]): Promise<GroupState> {
+    const existing = this.group(groupId);
+    if (!existing) throw new Error(`unknown group ${groupId}`);
+    const next = [...new Set([this.aci, ...members])];
+    if (next.length > MAX_GROUP_MEMBERS) {
+      throw new Error(`a group may hold at most ${MAX_GROUP_MEMBERS} members`);
+    }
+
+    // A group that has reached the ceiling can no longer be edited, and saying
+    // so is the whole point: silently emitting a revision the other
+    // implementation reads back negative is how the group froze in the first
+    // place.
+    if (existing.revision >= MAX_GROUP_REVISION) {
+      throw new Error(`group ${groupId} has reached the revision ceiling of ${MAX_GROUP_REVISION}`);
+    }
+    const updated: GroupState = { ...existing, members: next, revision: existing.revision + 1 };
+    this.saveGroup(updated);
+
+    // Told to the union of both lists. Somebody just removed still receives
+    // the notice that they were, which is information they are entitled to and
+    // which their client needs in order to stop showing the group as live.
+    const audience = [...new Set([...existing.members, ...next])];
+    await this.announceGroup(updated, audience);
+    return updated;
+  }
+
+  /** Leaves a group and tells the others, then forgets it locally. */
+  async leaveGroup(groupId: string): Promise<void> {
+    const group = this.group(groupId);
+    if (!group) return;
+    const remaining = group.members.filter((m) => m !== this.aci);
+    await this.fanOut(
+      { ...group, members: remaining, revision: group.revision + 1 },
+      'left',
+      { name: group.name, members: remaining, event: 'leave', revision: group.revision + 1 },
+      remaining,
+    );
+    this.forgetGroup(groupId, group.revision + 1);
+  }
+
+  private async announceGroup(group: GroupState, audience?: string[]): Promise<void> {
+    await this.fanOut(
+      group,
+      `joined ${group.name}`,
+      { name: group.name, members: group.members, event: 'update', revision: group.revision },
+      audience,
+    );
+  }
+
+  private async fanOut(
+    group: GroupState,
+    body: string,
+    control: MessagePayload['group'],
+    audience?: string[],
+  ): Promise<void> {
+    const targets = (audience ?? group.members).filter((m) => m !== this.aci);
+    // Sent one at a time rather than in parallel. Every send mutates a ratchet
+    // and the queue that serialises them is per-client, so firing fifty at
+    // once would simply contend for it; worse, a partial failure would be
+    // harder to reason about than a clean stop at the member it failed on.
+    for (const member of targets) {
+      await this.sendPayload(member, body, group.groupId, control);
+    }
+  }
+
+  /**
+   * Merges a group description that arrived from another member.
+   *
+   * A warning worth writing down: there is no server-side record of who is in
+   * a group, so this is the only source of truth, and it arrives from a peer.
+   * A dishonest member can therefore claim any membership they like, and every
+   * client will believe them. That is a real limit of a design with no
+   * authority to appeal to; closing it needs group changes signed by the
+   * member who made them and verified against the group's history, which this
+   * does not yet do. Until then the UI must show membership changes plainly so
+   * a person can notice one they did not expect.
+   *
+   * Revisions only ever move forward, so a replayed old announcement cannot
+   * quietly restore a member who was removed.
+   */
+  private applyGroupUpdate(
+    groupId: string,
+    update: NonNullable<MessagePayload['group']>,
+    from: string,
+  ): void {
+    const existing = this.group(groupId);
+    if (existing && update.revision <= existing.revision) return;
+
+    // Only somebody already in the group may change it, once we know of one.
+    if (existing && !existing.members.includes(from)) return;
+
+    // A group we have left or been removed from leaves a tombstone behind, and
+    // the tombstone is what keeps replay protection alive after the state it
+    // protected is gone.
+    //
+    // Without it the attack is: remove somebody, wait for their client to
+    // forget the group, then replay the original announcement. It arrives with
+    // no existing state to compare against, so neither the revision check nor
+    // the membership check above can fire, and the group comes back — with
+    // whatever member list the replayer chose. The victim then sends group
+    // messages to people the real owner never added. Found by replaying a
+    // revision-1 announcement at a removed member; it worked.
+    const tombstone = this.store.getMetaNumber(groupTombstone(groupId));
+    if (!existing && tombstone !== null && update.revision <= tombstone) return;
+
+    // An announcement from somebody who is not in the membership they are
+    // announcing is nonsense, and it is how a stranger would introduce a group
+    // built around a list of their choosing.
+    if (!update.members.includes(from) && update.event !== 'leave') return;
+
+    if (update.event === 'leave') {
+      // A leave asserts one thing — the sender is gone — and is not an
+      // announcement about the group. Treating it as one is what let a
+      // stranger write a group onto this device: against an unknown groupId
+      // there is no `existing`, so neither the revision check nor the
+      // membership check above can fire, the exception on the line above skips
+      // the last guard, and this branch then saved whatever name, roster and
+      // revision arrived. The author needed no relationship to the group at
+      // all; any registered account can send a sealed message.
+      //
+      // So a leave may only ever subtract its sender from a group we already
+      // hold. Every other field comes from our own copy rather than from the
+      // message, which also stops a real member rewriting the roster or
+      // renaming the group on their way out.
+      if (!existing) return;
+      if (!existing.members.includes(from)) return;
+      this.saveGroup({
+        groupId,
+        name: existing.name,
+        members: existing.members.filter((m) => m !== from),
+        revision: update.revision,
+      });
+      return;
+    }
+
+    if (!update.members.includes(this.aci)) {
+      // We are no longer in it. Drop it rather than keep a group we cannot
+      // send to and will never receive from again.
+      this.forgetGroup(groupId);
+      return;
+    }
+
+    // A group we have never seen is the only kind that grows this store, and
+    // anybody who knows an account identifier can announce one. Without a
+    // ceiling that is a device-filling attack from a single account: every
+    // fresh identifier is another entry, and the index holding them is
+    // rewritten on each save. Updates to groups already held are unaffected, so
+    // reaching the cap cannot cost somebody a group they are really in.
+    if (!existing && this.groups().length >= MAX_GROUPS) return;
+
+    this.saveGroup({ groupId, name: update.name, members: update.members, revision: update.revision });
+  }
+
+  private saveGroup(group: GroupState): void {
+    this.store.setMetaString(groupMeta(group.groupId), JSON.stringify(group));
+    const ids = new Set(JSON.parse(this.store.getMetaString(GROUP_INDEX) ?? '[]') as string[]);
+    ids.add(group.groupId);
+    this.store.setMetaString(GROUP_INDEX, JSON.stringify([...ids]));
+  }
+
+  private forgetGroup(groupId: string, revision?: number): void {
+    // Remember how far this group had got, so a replayed older announcement
+    // cannot resurrect it. Cheap: one integer per group ever left.
+    const last = revision ?? this.group(groupId)?.revision;
+    if (last !== undefined) {
+      const prior = this.store.getMetaNumber(groupTombstone(groupId)) ?? -1;
+      if (last > prior) this.store.setMetaNumber(groupTombstone(groupId), last);
+    }
+    this.store.setMetaString(groupMeta(groupId), '');
+    const ids = (JSON.parse(this.store.getMetaString(GROUP_INDEX) ?? '[]') as string[])
+      .filter((id) => id !== groupId);
+    this.store.setMetaString(GROUP_INDEX, JSON.stringify(ids));
   }
 
   /**
@@ -455,6 +810,10 @@ export class MillygramClient {
         this.store.setMetaNumber(peerBucketMeta(senderAci), parsed.data.bucketId);
       }
 
+      if (parsed.data.groupId && parsed.data.group) {
+        this.applyGroupUpdate(parsed.data.groupId, parsed.data.group, senderAci);
+      }
+
       return {
         senderAci,
         senderDeviceId: result.deviceId(),
@@ -462,6 +821,7 @@ export class MillygramClient {
         senderUsername: parsed.data.username ?? null,
         sentAt: parsed.data.sentAt,
         receivedAt: Date.now(),
+        groupId: parsed.data.groupId ?? null,
       };
     } catch (error) {
       // Most failures here are simply other people's mail: a bucket member
@@ -516,8 +876,39 @@ export class MillygramClient {
     onMessage: (message: IncomingMessage) => void | Promise<void>,
   ): Promise<void> {
     this.queue = this.queue.then(async () => {
-      for (const envelope of envelopes) {
-        if (envelope.seq <= this.cursor) continue;
+      // Sorted here, because the order of this list is chosen by the gateway
+      // and a hostile one is inside the threat model.
+      //
+      // The cursor moves to each envelope's seq as it is handled, and anything
+      // at or below the cursor is skipped. Taken in the order they arrived,
+      // one envelope carrying a high seq therefore steps the cursor past every
+      // envelope behind it, which are then dropped without a word. Returning a
+      // genuine batch in reverse was enough to lose four messages out of five;
+      // a single unopenable envelope claiming seq 999999 — which costs the
+      // gateway nothing to invent — stepped the cursor beyond every message
+      // that account would ever be sent, permanently, from one response.
+      //
+      // Sorting makes the traversal independent of the order the gateway chose,
+      // so nothing behind a later envelope can be skipped. It does not stop a
+      // fabricated seq from poisoning the cursor for future messages: the
+      // sequence numbers are the gateway's own and the client has no way to
+      // check them. What it does do is confine the damage to what has not
+      // arrived yet, rather than also destroying mail already in hand.
+      const ordered = [...envelopes].sort((a, b) => a.seq - b.seq);
+      for (const envelope of ordered) {
+        const cursor = this.cursor;
+        if (envelope.seq <= cursor) continue;
+        // No single step may carry the cursor more than one window forward.
+        // Ignored rather than refused: refusing would stall catch-up for good,
+        // because the next poll returns the same poisoned entry, while skipping
+        // it lets every genuine envelope beside it through and leaves the
+        // cursor where those put it.
+        //
+        // Measured against the cursor as it stands for each envelope, not once
+        // per batch, so that this matches consume() on the Kotlin side exactly.
+        // A client that is genuinely far behind still walks forward through a
+        // sparse range; only a jump is refused.
+        if (envelope.seq > cursor + MAX_CURSOR_ADVANCE) continue;
         const message = await this.openEnvelope(envelope);
         this.store.setMetaNumber(META_CURSOR, envelope.seq);
         if (message) await onMessage(message);

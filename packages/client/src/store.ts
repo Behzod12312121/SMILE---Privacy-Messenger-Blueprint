@@ -60,12 +60,41 @@ const KEY_BYTES = 32;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 
+/**
+ * Refuses cost parameters that did not come from us.
+ *
+ * The parameters are stored per-vault so that a database written under
+ * different settings still opens, which means the numbers reaching scrypt are
+ * whatever the file says. scrypt's working set is 128 * N * r bytes, so
+ * N = 2^24 asks for seventeen gigabytes and N = 2^28 for two hundred and
+ * seventy-four.
+ *
+ * The maxmem argument below used to be computed as `128 * n * r * 2` — derived
+ * from the very numbers it was meant to bound, so it rose to meet any demand
+ * and refused nothing. It is a fixed ceiling now.
+ *
+ * The floor matters equally: a file claiming N = 2 opens a vault whose key
+ * falls to a trivial offline search, and the vault keeps those parameters.
+ */
+const MIN_KDF_N = 16384;
+const MAX_KDF_N = 1 << 20;
+const KDF_MAXMEM_CEILING = 128 * MAX_KDF_N * 8 * 2;
+
+function requireSaneKdf(n: number, r: number, p: number): void {
+  if (!Number.isInteger(n) || n < MIN_KDF_N || n > MAX_KDF_N || (n & (n - 1)) !== 0) {
+    throw new Error('vault KDF cost is out of range');
+  }
+  if (!Number.isInteger(r) || r < 1 || r > 32) throw new Error('vault KDF block size is out of range');
+  if (!Number.isInteger(p) || p < 1 || p > 16) throw new Error('vault KDF parallelism is out of range');
+}
+
 function deriveKey(passphrase: string, salt: Buffer, n: number, r: number, p: number): Buffer {
+  requireSaneKdf(n, r, p);
   return scryptSync(passphrase.normalize('NFKC'), salt, KEY_BYTES, {
     N: n,
     r,
     p,
-    maxmem: 128 * n * r * 2,
+    maxmem: KDF_MAXMEM_CEILING,
   });
 }
 

@@ -59,6 +59,32 @@ object Vault {
      */
     data class KdfParameters(val n: Int = 32_768, val r: Int = 8, val p: Int = 1)
 
+    /**
+     * Refuses cost parameters that did not come from us.
+     *
+     * A backup file carries the parameters its key was derived with, so that a
+     * vault made under different settings still opens. That means the numbers
+     * handed to scrypt on import are chosen by whoever wrote the file, and
+     * scrypt's working set is 128 * N * r bytes: N = 2^24 asks for seventeen
+     * gigabytes. On a handset that is not a slow import, it is the process
+     * being killed, and it costs the attacker nothing but a text edit.
+     *
+     * The ceiling is deliberately well above anything this app writes (2^15)
+     * and well below anything a phone cannot survive. The floor matters just as
+     * much in the other direction: a file claiming N = 2 would restore a vault
+     * whose key is trivial to brute force, and the restored database keeps
+     * those parameters permanently.
+     */
+    fun requireSaneKdf(params: KdfParameters) {
+        require(params.n in MIN_KDF_N..MAX_KDF_N) { "backup KDF cost out of range" }
+        require(params.n and (params.n - 1) == 0) { "backup KDF cost must be a power of two" }
+        require(params.r in 1..32) { "backup KDF block size out of range" }
+        require(params.p in 1..16) { "backup KDF parallelism out of range" }
+    }
+
+    private const val MIN_KDF_N: Int = 16_384
+    private const val MAX_KDF_N: Int = 1 shl 20
+
     private val random = SecureRandom()
 
     fun randomBytes(length: Int): ByteArray {

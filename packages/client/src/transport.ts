@@ -12,6 +12,7 @@ import {
   b64,
   encodeObliviousRequest,
   solveProofOfWork,
+  usernameHash,
   unb64,
   type Bytes,
   type RegisterRequest,
@@ -124,9 +125,17 @@ export class Transport {
     return RegisterResponse.parse(await this.request('POST', '/v1/accounts', { body: request }));
   }
 
+  /**
+   * Resolving a handle without disclosing it.
+   *
+   * The hash goes up, never the name. The gateway matches it against what it
+   * stored at registration and learns which account was asked for — but not
+   * what that account is called, and not what the caller typed.
+   */
   async lookupUsername(username: string): Promise<DirectoryResponse> {
+    const hash = b64(usernameHash(username));
     return DirectoryResponse.parse(
-      await this.request('GET', `/v1/directory/${encodeURIComponent(username)}`, { auth: true }),
+      await this.request('GET', `/v1/directory/${encodeURIComponent(hash)}`, { auth: true }),
     );
   }
 
@@ -177,8 +186,36 @@ export class Transport {
    * own address — is withheld from the gateway too.
    */
   async submit(bucketId: number, content: Uint8Array, difficulty: number): Promise<void> {
-    const nonce = solveProofOfWork(bucketId, content, difficulty);
+    // A bucket under pressure charges more, and says so when it refuses. The
+    // gateway cannot know who is sending -- submission is anonymous -- so the
+    // only thing it can raise is the price, and the only way that price reaches
+    // an honest sender is a refusal carrying the new figure. Without this
+    // retry, escalation would read to a caller exactly like the flat refusal it
+    // replaced: the message still would not go.
+    //
+    // Once. A second raise inside one send means the bucket is being drained
+    // faster than a phone can answer, and paying without limit is how a sender
+    // is turned into the flooder's battery.
+    let required = difficulty;
+    for (let attempt = 0; ; attempt += 1) {
+      const nonce = solveProofOfWork(bucketId, content, required);
+      try {
+        await this.submitSolved(bucketId, content, nonce);
+        return;
+      } catch (error) {
+        const harder =
+          error instanceof TransportError &&
+          error.code === 'insufficient_proof_of_work' &&
+          error.requiredDifficulty !== undefined &&
+          error.requiredDifficulty > required;
+        if (!harder || attempt > 0) throw error;
+        required = (error as TransportError).requiredDifficulty!;
+      }
+    }
+  }
 
+  /** One submission attempt with the work already solved. */
+  private async submitSolved(bucketId: number, content: Uint8Array, nonce: number): Promise<void> {
     if (!this.obliviousRelayUrl) {
       await this.request('PUT', '/v1/messages', { body: { bucketId, content: b64(content), nonce } });
       return;
@@ -198,23 +235,37 @@ export class Transport {
     if (!response.ok) {
       const text = await response.text();
       let code = 'submission_failed';
+      let required: number | undefined;
       try {
         const parsed: unknown = text ? JSON.parse(text) : null;
         if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
           code = String((parsed as { error: unknown }).error);
+          // Carried through the relay as well as the direct path. Dropping it
+          // here would mean a submission through a relay could never learn the
+          // price it was refused for, and so could never pay it.
+          const stated = (parsed as { difficulty?: unknown }).difficulty;
+          if (typeof stated === 'number' && Number.isSafeInteger(stated)) required = stated;
         }
       } catch {
         // The relay may answer with no body at all; the status is enough.
       }
-      throw new TransportError(response.status, code);
+      throw new TransportError(response.status, code, required);
     }
   }
 
   /** Everything the caller's bucket has received since `cursor`. */
   async since(cursor: number): Promise<StoredEnvelope[]> {
-    const result = (await this.request('GET', `/v1/messages?since=${cursor}`, { auth: true })) as {
-      envelopes?: unknown;
-    };
+    const result = (await this.request('GET', `/v1/messages?since=${cursor}`, { auth: true })) as
+      | { envelopes?: unknown }
+      | null
+      | undefined;
+
+    // A body of literal `null` parses to null, and reading a property off it
+    // throws a TypeError rather than failing the shape check below. That is the
+    // one response a hostile gateway can send to make catch-up raise instead of
+    // refuse — the exact outcome the note below exists to prevent, reached by
+    // skipping past it. Four characters of body, and the loop stops.
+    if (typeof result !== 'object' || result === null) return [];
 
     // The gateway decides what goes in this list and a hostile one is inside
     // the threat model, so nothing here is assumed to have the shape it claims.

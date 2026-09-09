@@ -3,7 +3,9 @@ package uz.millygram.client
 import java.io.Closeable
 import java.io.IOException
 import java.time.Duration
+import okhttp3.CertificatePinner
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,6 +16,70 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import uz.millygram.protocol.Protocol
+
+/**
+ * The one place in this module where an HTTP client is obtained.
+ *
+ * It exists because of a specific shape of bug: a security-relevant call that
+ * takes `http: OkHttpClient = OkHttpClient()` gets the insecure client by
+ * default, so the way to end up unprotected is to write nothing at all. That is
+ * how recovery — the one unauthenticated flow that hands the client a trust
+ * root — ended up running on a client the app had never configured, and how any
+ * pinning added to the app's client would have quietly failed to cover it.
+ * Funnelling every path through here means a change made once is a change made
+ * everywhere, and a new call site has to name the client it wants.
+ *
+ * On what pinning actually buys here, honestly. This deployment reaches the
+ * internet through a Tailscale Funnel on a `*.ts.net` name, and Tailscale
+ * operates that zone: it can obtain a publicly-trusted certificate for the
+ * hostname whenever it decides to. Pinning therefore defends against a passive
+ * or active observer at the edge — a carrier-side proxy, an operator-installed
+ * root on a handset, a mis-issuance by some unrelated CA — and not against the
+ * party that runs the name. Pinning a leaf also breaks on renewal, which for an
+ * app that people cannot easily update is an outage, not an inconvenience.
+ * So the list ships empty: the honest posture is that there is no stable key
+ * worth pinning until the deployment owns its own name and its own intermediate,
+ * and shipping a pin we would have to rotate under pressure would be worse than
+ * shipping none. The wiring is here so that turning it on later is a build
+ * setting rather than a code change.
+ */
+object MillygramHttp {
+
+    /**
+     * Applies the configured pins, if any, to the client the caller supplied.
+     *
+     * Pins are applied to the gateway host and the relay host separately: they
+     * are different names, often different operators, and a pin set that
+     * silently covered only one of them would be the worst of both worlds — the
+     * appearance of protection over the half that is left open.
+     *
+     * With an empty pin list this returns the caller's client untouched rather
+     * than a rebuilt copy, so connection pools and interceptors the app set up
+     * survive intact.
+     */
+    fun forGateway(
+        base: OkHttpClient,
+        serverUrl: String,
+        obliviousRelayUrl: String?,
+        certificatePins: List<String>,
+    ): OkHttpClient {
+        if (certificatePins.isEmpty()) return base
+
+        val hosts = listOfNotNull(serverUrl, obliviousRelayUrl)
+            .mapNotNull { it.toHttpUrlOrNull()?.host }
+            .distinct()
+        if (hosts.isEmpty()) return base
+
+        val pinner = CertificatePinner.Builder()
+            .apply {
+                for (host in hosts) {
+                    for (pin in certificatePins) add(host, pin)
+                }
+            }
+            .build()
+        return base.newBuilder().certificatePinner(pinner).build()
+    }
+}
 
 /**
  * The relay-facing transport. HTTP calls are synchronous by design — every
@@ -47,7 +113,22 @@ class Transport(
     private var credentials: Credentials? = null,
     /** When set, submissions go through this relay instead of straight to the gateway. */
     private val obliviousRelayUrl: String? = null,
+    /**
+     * Every real caller passes the client the app configured, obtained through
+     * [MillygramHttp.forGateway]. The default here is reached only by the JVM
+     * shape tests, which talk to a MockWebServer on loopback and have nothing
+     * to pin; it is deliberately not offered to any production path, because a
+     * defaulted client on a security-relevant call is how the unconfigured one
+     * becomes the one you get by writing nothing.
+     */
     private val client: OkHttpClient = OkHttpClient.Builder().build(),
+    /**
+     * Supplies the environment signal at auth time. A supplier rather than a
+     * fixed string because the answer can change during a session — a debugger
+     * or hook can attach after launch — so it is read fresh on each token
+     * refresh, not captured once at construction.
+     */
+    private val environment: (() -> String)? = null,
 ) {
 
     /** Refresh a bearer token a little before it expires so a request never races it. */
@@ -70,13 +151,21 @@ class Transport(
 
     /* ---- account ---- */
 
-    data class RegisterResponse(val aci: String, val bucketId: Long, val trustRoot: String, val powDifficulty: Int)
+    data class RegisterResponse(
+        val aci: String,
+        val bucketId: Long,
+        val trustRoot: String,
+        val powDifficulty: Int,
+        /** Base64 of this account's own avatar seed. Empty on an older gateway. */
+        val avatarSeed: String,
+    )
 
     fun register(request: JSONObject): RegisterResponse {
         val body = json(post("/v1/accounts", request))
         return RegisterResponse(
             aci = body.getString("aci"),
             bucketId = body.getLong("bucketId"),
+            avatarSeed = body.optString("avatarSeed", ""),
             trustRoot = body.getString("trustRoot"),
             powDifficulty = body.getInt("powDifficulty"),
         )
@@ -96,6 +185,7 @@ class Transport(
             put("deviceId", creds.deviceId)
             put("nonce", challenge.getString("nonce"))
             put("signature", Protocol.b64(signature))
+            environment?.invoke()?.let { put("environment", it) }
         }))
 
         val newToken = Token(response.getString("token"), response.getLong("expiresAt"))
@@ -105,14 +195,29 @@ class Transport(
 
     /* ---- directory and keys ---- */
 
-    data class DirectoryEntry(val aci: String, val deviceId: Int, val bucketId: Long)
+    data class DirectoryEntry(
+        val aci: String,
+        val deviceId: Int,
+        val bucketId: Long,
+        /** Base64 of the gateway-assigned avatar seed. Empty on an older gateway. */
+        val avatarSeed: String,
+    )
 
+    /**
+     * Resolving a handle without disclosing it.
+     *
+     * The hash goes up, never the name. The gateway matches it against what it
+     * stored at registration and learns which account was asked for — but not
+     * what that account is called, and not what the caller typed.
+     */
     fun lookupUsername(username: String): DirectoryEntry {
-        val body = json(get("/v1/directory/${urlEncode(username)}", auth = true))
+        val hash = Protocol.b64(Handles.hash(username))
+        val body = json(get("/v1/directory/${urlEncode(hash)}", auth = true))
         return DirectoryEntry(
             aci = body.getString("aci"),
             deviceId = body.getInt("deviceId"),
             bucketId = body.getLong("bucketId"),
+            avatarSeed = body.optString("avatarSeed", ""),
         )
     }
 
@@ -143,6 +248,73 @@ class Transport(
             .also { obliviousKey = it }
     }
 
+    /* ---- recovery ---- */
+
+    fun attachRecoveryNumber(phoneNumber: String) {
+        json(put("/v1/account/recovery-number", JSONObject().apply { put("phoneNumber", phoneNumber) }, auth = true))
+    }
+
+    fun detachRecoveryNumber() {
+        execute("DELETE", "/v1/account/recovery-number", null, auth = true).use { checkStatus(it) }
+    }
+
+    /**
+     * Recovery runs before there is an account, so it cannot borrow an
+     * authenticated [Transport] and has to be given a client of its own.
+     *
+     * That client is a required argument on both calls below, with no default,
+     * and the omission is the point. These two requests are the most sensitive
+     * unauthenticated exchange the app makes — one carries a phone number that
+     * in this country is registered against a passport, the other comes back
+     * with the trust root the client will pin for the life of the install — and
+     * they used to default to `OkHttpClient()`, a client the app had never
+     * configured and could never configure. A defaulted client on a call like
+     * this is a trap: it makes the insecure path the one you get by writing
+     * nothing, and any pinning or interception the app arranged for its own
+     * client would have silently failed to cover exactly the flow that needed
+     * it most. Making the parameter required means a new call site has to say,
+     * out loud, which client it is using.
+     */
+    object Recovery {
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+
+        /**
+         * Asks for a code, on a transport with no account behind it.
+         *
+         * Answers the same whether or not the number is known, so there is
+         * nothing here to read: a client cannot learn from this call whether
+         * somebody uses the service, and neither can anyone watching it.
+         */
+        fun start(baseUrl: String, phoneNumber: String, http: OkHttpClient) {
+            val body = JSONObject().apply { put("phoneNumber", phoneNumber) }
+            val request = Request.Builder()
+                .url("$baseUrl/v1/recovery/start".toHttpUrl())
+                .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw TransportError(response.code, "recovery_start_failed")
+                }
+            }
+        }
+
+        fun complete(baseUrl: String, body: JSONObject, http: OkHttpClient): JSONObject {
+            val request = Request.Builder()
+                .url("$baseUrl/v1/recovery/complete".toHttpUrl())
+                .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            http.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val code = runCatching { JSONObject(text).optString("error", "request_failed") }
+                        .getOrDefault("request_failed")
+                    throw TransportError(response.code, code)
+                }
+                return JSONObject(text)
+            }
+        }
+    }
+
     /* ---- messages ---- */
 
     /**
@@ -152,9 +324,37 @@ class Transport(
      * address. Without the relay it goes straight to the gateway, still
      * anonymous in every other respect.
      */
+    /**
+     * Hands one envelope to the gateway, paying whatever the bucket costs now.
+     *
+     * A bucket whose shared inbound budget is being drained charges extra work
+     * and names the figure when it refuses. Submission is anonymous, so the
+     * gateway has no sender to throttle and the price is the only lever it has;
+     * without this retry an honest sender reads that price as a flat refusal,
+     * and the flooder still wins.
+     *
+     * Once. A second raise inside one send means the bucket is draining faster
+     * than a handset can answer, and paying without limit turns the sender into
+     * the flooder's battery.
+     */
     fun submit(bucketId: Long, content: ByteArray, difficulty: Int) {
-        val nonce = Protocol.solveProofOfWork(bucketId, content, difficulty)
+        var required = difficulty
+        var attempt = 0
+        while (true) {
+            try {
+                submitSolved(bucketId, content, Protocol.solveProofOfWork(bucketId, content, required))
+                return
+            } catch (failure: TransportError) {
+                val asked = failure.requiredDifficulty
+                val harder = failure.code == "insufficient_proof_of_work" && asked != null && asked > required
+                if (!harder || attempt > 0) throw failure
+                required = asked!!
+                attempt += 1
+            }
+        }
+    }
 
+    private fun submitSolved(bucketId: Long, content: ByteArray, nonce: Long) {
         val relayUrl = obliviousRelayUrl
         if (relayUrl == null) {
             val body = JSONObject().apply {
@@ -182,7 +382,25 @@ class Transport(
     data class Envelope(val seq: Long, val content: ByteArray, val arrivedAt: Long)
 
     fun since(cursor: Long): List<Envelope> {
-        val body = json(get("/v1/messages?since=$cursor", auth = true))
+        // A body that is not a JSON object at all — the four characters `null`
+        // are enough — makes JSONObject throw, and that lands here rather than
+        // in the per-entry guard below. The result is the very outcome that
+        // guard exists to prevent: catch-up raises, the cursor does not move,
+        // and the app sits there saying it is online. The TypeScript client
+        // returns an empty list for the same input, so throwing here would also
+        // be a disagreement between the two implementations about what a
+        // hostile gateway can do.
+        //
+        // Only the parse is forgiven. A transport failure still propagates,
+        // because a 401 has to reach the code that refreshes the token.
+        val response = get("/v1/messages?since=$cursor", auth = true)
+        val body = try {
+            json(response)
+        } catch (e: TransportError) {
+            throw e
+        } catch (t: Throwable) {
+            return emptyList()
+        }
         val array = body.optJSONArray("envelopes") ?: return emptyList()
 
         // Each entry is parsed on its own and a bad one is skipped, exactly as

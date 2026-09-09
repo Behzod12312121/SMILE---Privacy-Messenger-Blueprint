@@ -70,7 +70,64 @@ internal object DeviceKey {
         store.getKey(ALIAS, null) as? SecretKey
     }.getOrNull()
 
-    private fun create(): SecretKey? = runCatching {
+    /**
+     * True once the live key is confirmed to sit in a discrete secure element
+     * (StrongBox / Titan) rather than the general TEE. Read for the risk signal
+     * the gateway records; it changes nothing about how the key is used.
+     */
+    fun isStrongBoxBacked(): Boolean = runCatching {
+        val key = load() ?: return false
+        val factory = java.security.KeyFactory.getInstance(key.algorithm, KEYSTORE)
+        val info = factory.getKeySpec(key, android.security.keystore.KeyInfo::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            info.securityLevel == KeyProperties.SECURITY_LEVEL_STRONGBOX
+        } else {
+            @Suppress("DEPRECATION")
+            info.isInsideSecureHardware
+        }
+    }.getOrDefault(false)
+
+    private fun create(): SecretKey? {
+        // StrongBox first. On a phone with a discrete secure element — the
+        // Titan M2 in a modern Samsung, Pixel's Titan, most recent midrange —
+        // the key is generated inside that chip and cannot be pulled out of it
+        // by a kernel exploit, only used through it. A copied database is then
+        // worthless on the attacker's own hardware even with root: the wrapping
+        // key never left the element it was born in.
+        //
+        // Deliberately NOT setUserAuthenticationRequired. That would bind the
+        // key to a fresh fingerprint, and this key exists precisely so the
+        // background service can decrypt a message that arrives while nobody is
+        // holding the phone. Auth-binding it would stop notifications until the
+        // next manual unlock — the exact failure the screen-level lock avoids
+        // by gating the screen instead of the key.
+        strongBox()?.let {
+            android.util.Log.i("MillyGuard", "vault key created in StrongBox")
+            return it
+        }
+        // Older or cheaper handsets have no separate element. The key still
+        // lives in the TEE, non-extractable and unlock-gated; a copied vault is
+        // still useless without this device. StrongBox is a hardening, not a
+        // requirement, so its absence must never lock a real user out.
+        android.util.Log.i("MillyGuard", "vault key created in TEE (no StrongBox for AES on this device)")
+        return teeOnly()
+    }
+
+    private fun strongBox(): SecretKey? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        return runCatching { generate(strongBox = true) }
+            .getOrElse { failure ->
+                // StrongBoxUnavailableException is the documented "no element
+                // here" signal, but some OEMs throw a plain ProviderException
+                // or KeyStoreException instead, so anything short of success
+                // falls through to the TEE rather than failing the open.
+                null
+            }
+    }
+
+    private fun teeOnly(): SecretKey? = runCatching { generate(strongBox = false) }.getOrNull()
+
+    private fun generate(strongBox: Boolean): SecretKey {
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
             ALIAS,
@@ -85,9 +142,10 @@ internal object DeviceKey {
                 // while it sits on a table.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) setUnlockedDeviceRequired(true)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) setInvalidatedByBiometricEnrollment(false)
+                if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) setIsStrongBoxBacked(true)
             }
             .build()
         generator.init(spec)
-        generator.generateKey()
-    }.getOrNull()
+        return generator.generateKey()
+    }
 }
