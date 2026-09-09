@@ -59,8 +59,6 @@ local.properties
 
 # Per-developer tool state. Not the product, and settings.local.json in
 # particular records one machine's permission decisions.
-.claude/worktrees/
-.claude/settings.local.json
 .idea/
 *.iml
 .vscode/
