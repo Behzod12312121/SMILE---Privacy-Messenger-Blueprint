@@ -1,0 +1,97 @@
+# The gateway. Runs on the Oracle box — a rented cloud host with its own public
+# address and its own firewall in front of it.
+#
+# That first line is a requirement, not a note on provenance. The caddy service
+# below binds ports 80 and 443 on every interface the machine has. On a rented
+# box facing the internet on purpose that is the entire point. On a workstation
+# it is something else: bringing this file up on the laptop publishes the
+# gateway to whatever network the laptop is joined to at that moment — a cafe's
+# Wi-Fi, a hotel's, a conference hall's — with nothing between it and the other
+# guests, and it stays published every time the machine reconnects, because
+# restart: unless-stopped is doing its job. Caddy will meanwhile try to prove
+# ownership of a hostname the laptop does not answer for and fail in a loop with
+# the ports still open. The laptop deployment is deploy/laptop/: it binds only
+# to 127.0.0.1 and reaches the internet through a Tailscale Funnel exactly so
+# that no interface is ever listening.
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: millygram:latest
+    restart: unless-stopped
+    command: ["node", "--enable-source-maps", "packages/server/dist/index.js"]
+    environment:
+      # Bound to the container's own interface, not the host's. Caddy is the
+      # only thing that reaches it, and it reaches it over the compose network.
+      MG_HOST: "0.0.0.0"
+      MG_PORT: "8443"
+      MG_DB: "/data/millygram-server.db"
+      # Off, and the old justification here was simply wrong. It said that
+      # without this every request would appear to come from the proxy and every
+      # address-keyed rate limit would collapse onto one key. The gateway has no
+      # address-keyed rate limits: its limiters key on a fixed constant, on an
+      # account's aci, on a sender-and-target pair, on a delivery bucket, or on
+      # a MAC of the recovery number, and the server never reads the caller's
+      # address anywhere. The flag was protecting a mechanism that does not
+      # exist.
+      #
+      # All it really does is make Fastify treat X-Forwarded-* as authoritative.
+      # In this topology that would at least be honest — the Caddyfile beside
+      # this file overwrites X-Forwarded-For with the real peer rather than
+      # appending to whatever the client sent — but honest and useless is still
+      # a header being trusted for nothing, and the flag would quietly become
+      # load-bearing the first time somebody adds a per-address limiter. Turn it
+      # on in the same change that adds a consumer for the client address, not
+      # before.
+      MG_TRUST_PROXY: "0"
+      MG_LOG_LEVEL: "info"
+      # Recovery codes go nowhere until an SMS provider is wired. Left unset on
+      # purpose: the gateway logs an error per request rather than pretending.
+      # MG_RECOVERY_SMS_URL: ""
+    volumes:
+      - gateway-data:/data
+    networks: [edge]
+    # Defence in depth around a process that faces the internet.
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # The application keeps no access log — per-request logging is off and the
+    # serializers drop remoteAddress and the URL — and the Caddyfile discards
+    # its own. None of that helps if Docker's default json-file driver is left
+    # unbounded underneath, writing an RFC3339Nano-stamped line to the host for
+    # everything the container says and never rotating it. Startup and error
+    # output is worth keeping, so it is bounded rather than discarded.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    depends_on: [gateway]
+    # Caddy's own access log is discarded in the Caddyfile, but it still reports
+    # certificate renewals and TLS handshake failures on stdout, and a failing
+    # renewal can produce that in volume. Same bound as the gateway.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gateway-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:

@@ -1,0 +1,68 @@
+# What the image build is allowed to see.
+#
+# The build context is the repository root, because deploy/Dockerfile is invoked
+# with `context: ../..` from the compose files. Without this file that context is
+# around 4.5 GB — android/ alone is 4.3 GB of Gradle output and emulator debris —
+# and every byte of it is tarred up and handed to the daemon on every build, for
+# a Dockerfile that copies four things.
+#
+# Size is the boring half. The half that matters is that the live databases sit
+# in the repository root next to the source. deploy/Dockerfile is careful today
+# and copies only package.json, package-lock.json, packages/ and tsconfig*.json,
+# so nothing sensitive reaches a layer — but it is one `COPY . .` away from
+# baking real account material into an image that is meant to be distributable,
+# and that mistake is invisible until somebody pulls the image and unpacks it.
+# Excluding the material here means the daemon never receives it in the first
+# place, so the careless COPY has nothing to find.
+
+.git
+.gitignore
+
+# Dependencies and build output are reproduced inside the image from the
+# lockfile and the TypeScript sources. Copying the host's copies in would at
+# best waste the transfer and at worst ship native modules compiled against a
+# different libc than the runtime stage's.
+node_modules
+**/node_modules
+dist
+**/dist
+
+# tsc --build is incremental and decides what to emit from these. If dist/ is
+# excluded but the build info is not, tsc concludes inside the container that
+# everything is already up to date, emits nothing, and produces an image whose
+# entry point does not exist. The two exclusions belong together.
+**/*.tsbuildinfo
+
+# The Android client. Never part of a server image, and by itself the reason the
+# context was measured in gigabytes.
+android
+*.apk
+*.aab
+
+# Local scratch scripts and the design canvases: not part of the product.
+scratch
+design
+
+# The live databases, in the repository root right now, WAL and shared-memory
+# files beside them. These hold real registrations and undelivered envelopes.
+*.db
+*.db-wal
+*.db-shm
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# Filled-in deployment environment files. The examples are safe and are not
+# copied anyway; a real one carries a provider credential.
+deploy/**/.env
+
+# Audit and review notes. Internal prose about where the weaknesses are, which
+# is not something to hand out inside a shipped image.
+SECURITY-AUDIT.md
+audit-*.md
+
+# Editor and OS leftovers.
+.idea
+.vscode
+.DS_Store
+Thumbs.db

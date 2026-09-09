@@ -1,0 +1,29 @@
+# Replace with your DuckDNS hostname. Caddy fetches and renews a Let's Encrypt
+# certificate automatically, which is what the Android release build requires:
+# it refuses cleartext and trusts only the system CA store, so a self-signed
+# cert will not work.
+{$GATEWAY_HOST} {
+	# WebSockets pass through without extra configuration — the delivery socket
+	# needs this and Caddy upgrades it correctly by default.
+	reverse_proxy gateway:8443
+
+	# The client's real address, overwriting anything the client sent under
+	# that name rather than appending to it. This used to be described as what
+	# the rate limiters run on, paired with MG_TRUST_PROXY=1 on the gateway.
+	# That was never true: no limiter in the gateway keys on an address, and the
+	# server does not read one. So the gateway ignores this header today, and
+	# the flag is off.
+	#
+	# The line stays because overwriting is the half that has to be right first.
+	# A header the proxy replaces is a fact; a header the proxy merely passes
+	# through is whatever the caller typed. Anyone who later adds a per-address
+	# limit needs this already in place before MG_TRUST_PROXY can be turned back
+	# on, and would otherwise have built a limit an attacker can rekey at will.
+	header_up X-Forwarded-For {remote_host}
+
+	# No access log. It would be a running record of who contacted the gateway
+	# and when — the metadata this whole architecture exists to not keep.
+	log {
+		output discard
+	}
+}

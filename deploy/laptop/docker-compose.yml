@@ -1,0 +1,107 @@
+# The backend on one laptop, reached from the internet through a Tailscale
+# Funnel. No router configuration, no port forwarding, no public IP required —
+# the connection to Tailscale's ingress is outbound, which is what makes this
+# work behind an ISP-locked GPON box.
+#
+# There is no Caddy here any more. Tailscale terminates TLS itself, using a
+# Let's Encrypt certificate for this machine's permanent ts.net name, and the
+# certificate lives on this machine rather than at a provider's edge. So the
+# services below speak plain HTTP on the loopback interface and are never
+# exposed directly. Nothing in this file reads a DNS provider credential, and
+# nothing should: the Caddyfile and Dockerfile.caddy beside it belong to a
+# DuckDNS experiment that was tried and reverted.
+#
+# The same caveat as before: gateway and relay on one machine means one operator
+# holds both halves, so this is functionally complete but does not demonstrate
+# the sender/envelope separation a two-machine deployment gives you.
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: millygram:latest
+    restart: unless-stopped
+    command: ["node", "--enable-source-maps", "packages/server/dist/index.js"]
+    # Bound to loopback only. Nothing but tailscaled on this machine can reach
+    # it; the LAN cannot, and neither can anything else on the Wi-Fi.
+    ports: ["127.0.0.1:8443:8443"]
+    environment:
+      MG_HOST: "0.0.0.0"
+      MG_PORT: "8443"
+      MG_DB: "/data/millygram-server.db"
+      # Off, deliberately, and the reason is worth writing down because the
+      # comment that used to sit here was wrong. It claimed that without this
+      # flag the gateway would see every request as coming from the tunnel and
+      # collapse every address-keyed rate limit onto one key. There are no
+      # address-keyed rate limits. Every limiter in the gateway keys on a fixed
+      # 'gateway' constant, on an account's aci, on a sender-and-target pair, on
+      # a delivery bucket, or on a MAC of the recovery number — and the server
+      # never reads the caller's address at all, so there was never a limit for
+      # this flag to protect.
+      #
+      # What it does do is tell Fastify to believe X-Forwarded-For and the rest
+      # of that family. Tailscale's ingress appends the real caller to that
+      # header rather than replacing it, so a value the client invented survives
+      # in front of the real one, and a server told to trust the header reads
+      # from exactly that end. Today that reaches no decision anywhere in the
+      # code, which is what makes leaving it on pure downside: nothing gained to
+      # weigh against a header that silently becomes attacker-controlled the day
+      # somebody adds a per-address limiter and quite reasonably assumes the
+      # address is real. Whoever adds that consumer is the person who should
+      # turn this back on, and only alongside something in front that overwrites
+      # the header instead of appending to it.
+      MG_TRUST_PROXY: "0"
+      MG_LOG_LEVEL: "info"
+    volumes: [gateway-data:/data]
+    networks: [edge]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # Docker's default is the json-file driver with no limit, which keeps every
+    # line the container ever wrote, each stamped with an RFC3339Nano timestamp,
+    # in a file on the host that grows until the disk objects. That deserves to
+    # be said plainly: the application refuses to keep an access log — it turns
+    # per-request logging off outright and strips remoteAddress and the URL out
+    # of its serializers — and a messenger that goes to that much trouble should
+    # not have an unbounded record accumulating underneath it because nobody set
+    # a default. What remains on stdout is startup and error output, which is
+    # worth having when something breaks at three in the morning, so the answer
+    # is a deliberate bound rather than discarding it: thirty megabytes, oldest
+    # rotated out, and `docker compose logs -f gateway` keeps working.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  relay:
+    image: millygram:latest
+    restart: unless-stopped
+    command: ["node", "--enable-source-maps", "packages/server/dist/oblivious-relay.js"]
+    ports: ["127.0.0.1:8444:8444"]
+    environment:
+      MG_RELAY_HOST: "0.0.0.0"
+      MG_RELAY_PORT: "8444"
+      MG_GATEWAY_URL: "http://gateway:8443"
+    depends_on: [gateway]
+    networks: [edge]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # The same bound as the gateway, and it matters more here. The relay is the
+    # one process that ever sees a sender's address, and it is built so that the
+    # address dies with the request; an unbounded host-side log file underneath
+    # it is the obvious way for that to stop being true by accident.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gateway-data:
+
+networks:
+  edge:

@@ -1,0 +1,74 @@
+# The oblivious relay. Runs on the Google box — a different company, on a
+# different network, from the gateway.
+#
+# That separation is the point, not an accident of hosting. The relay learns
+# the sender's address and nothing about the message; the gateway learns the
+# sealed envelope and nothing about who sent it. Neither can reconstruct who
+# talked to whom, and running both under one operator would quietly hand that
+# reconstruction to whoever holds both boxes.
+#
+# Like its sibling in deploy/gateway/, this file is written for a rented cloud
+# host and not for a workstation. The caddy service below claims ports 80 and
+# 443 on every interface the machine has, so running it on the laptop turns the
+# laptop into a directly exposed server on whichever network it is joined to
+# that day, and keeps turning it back into one at every reconnect. The laptop
+# runs deploy/laptop/ instead, bound to 127.0.0.1 with a Tailscale Funnel in
+# front, precisely so that nothing is ever listening on a public interface.
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: millygram:latest
+    restart: unless-stopped
+    command: ["node", "--enable-source-maps", "packages/server/dist/oblivious-relay.js"]
+    environment:
+      MG_RELAY_HOST: "0.0.0.0"
+      MG_RELAY_PORT: "8444"
+      # The public gateway, over TLS. The relay cannot read what it forwards —
+      # the body is sealed to the gateway's key — so this is a dumb pipe that
+      # happens to be the only thing that sees the sender's address.
+      MG_GATEWAY_URL: "${GATEWAY_URL}"
+    networks: [edge]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # This is the machine where an unbounded default log would do real damage.
+    # The relay is the only party that ever sees a sender's address, and the
+    # whole service is built so that the address dies with the request; Docker's
+    # json-file driver left at its default writes the container's stdout to a
+    # host file that grows without limit and outlives every request in it, which
+    # is exactly the record this box exists not to have. Bounded on purpose, and
+    # a seizure of this host recovers thirty megabytes of startup and error
+    # lines rather than a year of them.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+    depends_on: [relay]
+    # The access log is discarded in the Caddyfile. What reaches stdout is
+    # certificate renewal and handshake noise, which still needs a ceiling.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:

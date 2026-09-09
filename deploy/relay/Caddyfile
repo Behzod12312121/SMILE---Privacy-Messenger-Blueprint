@@ -1,0 +1,12 @@
+{$RELAY_HOST} {
+	reverse_proxy relay:8444
+
+	# Deliberately no X-Forwarded-For here. The relay's whole job is to be the
+	# only party that sees the sender's address and to pass on nothing that
+	# identifies them; forwarding the caller's IP toward the gateway would undo
+	# the separation this service exists to create.
+
+	log {
+		output discard
+	}
+}

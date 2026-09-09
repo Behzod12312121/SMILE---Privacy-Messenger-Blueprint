@@ -1,0 +1,187 @@
+Smile
+Copyright (C) 2026 the Smile authors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation. The full text is in the LICENSE file at the root
+of this repository.
+
+This NOTICE lists third-party works distributed with, or linked into, Smile,
+together with the licence each is offered under. It is informational; the
+authoritative licence for each component is the one shipped by its own project.
+Every licence named here has been read from the artifact itself — an npm
+package's `license` field, a Maven POM's `<licenses>` block, or a LICENSE file
+inside the tree — rather than assumed from reputation.
+
+
+================================================================================
+1. libsignal — the reason this project is AGPL-3.0
+================================================================================
+
+libsignal
+Copyright 2020-2025 Signal Messenger, LLC
+Licensed under the GNU Affero General Public License, version 3 only
+https://github.com/signalapp/libsignal
+
+  - `@signalapp/libsignal-client` 0.101.2 (npm) declares `AGPL-3.0-only`.
+  - `org.signal:libsignal-android` 0.101.2 (Maven) declares `AGPLv3`, pointing
+    at https://www.gnu.org/licenses/agpl-3.0.txt.
+
+Both implementations of this project link libsignal, so Smile as a whole is a
+work based on it and must be distributed under the same licence. AGPL-3.0
+section 7 forbids adding further restrictions — including a "non-commercial use
+only" clause — to a licence you received under it. This is why Smile is
+AGPL-3.0 and cannot be anything narrower.
+
+libsignal in turn bundles third-party Rust crates and their notices; consult the
+libsignal repository for that list. This project does not vendor libsignal
+source, only its published binary artifacts.
+
+
+================================================================================
+2. Bundled artwork — Microsoft Fluent Emoji
+================================================================================
+
+The animated emoji in `android/app/src/main/assets/emoji/` are derived from
+Microsoft's Fluent Emoji (animated collection):
+https://github.com/microsoft/fluentui-emoji-animated
+
+They were converted from the published animated PNG into animated WebP, resized
+to 128x128, and had frames repeating a held pose removed with their duration
+folded into the preceding frame. The artwork itself is unchanged.
+
+The same notice, with the licence text in full, ships inside the application
+package at `assets/emoji/LICENSE.txt`, as the MIT licence requires.
+
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Microsoft states no year in its copyright line; none is invented here.
+
+
+================================================================================
+3. Node.js dependencies (gateway, oblivious relay, reference client)
+================================================================================
+
+Declared in `package.json`; versions are the exact pinned ones.
+
+  @signalapp/libsignal-client  0.101.2   AGPL-3.0-only   — see section 1
+  fastify                      5.12.1    MIT             Copyright (c) 2016-present The Fastify team
+  ws                           8.21.3    MIT             Copyright (c) 2011 Einar Otto Stangvik
+                                                         Copyright (c) 2013 Arnout Kazemier and contributors
+                                                         Copyright (c) 2016 Luigi Pinca and contributors
+  better-sqlite3               13.0.3    MIT             Copyright (c) 2017 Joshua Wise
+  zod                          4.5.4     MIT             Copyright (c) 2025 Colin McDonnell
+  @types/better-sqlite3        7.6.12    MIT             DefinitelyTyped contributors
+  @types/ws                    8.5.13    MIT             DefinitelyTyped contributors
+
+Development only, not shipped:
+
+  typescript                   5.9.2     Apache-2.0      Microsoft Corporation
+  @types/node                  22.15.3   MIT             DefinitelyTyped contributors
+
+`better-sqlite3` embeds SQLite, which its authors have dedicated to the public
+domain (https://www.sqlite.org/copyright.html).
+
+These packages pull transitive dependencies of their own — Fastify's, chiefly.
+Their licences travel inside `node_modules` and are not reproduced here; run
+`npm ls` or a licence checker for the resolved set at any given lockfile state.
+
+
+================================================================================
+4. Android dependencies
+================================================================================
+
+Declared across `android/**/build.gradle.kts`. Licences below are read from each
+artifact's Maven POM.
+
+  org.signal:libsignal-android              0.101.2    AGPLv3 — see section 1
+
+  com.squareup.okhttp3:okhttp               4.12.0     Apache-2.0
+  com.squareup.okhttp3:mockwebserver        4.12.0     Apache-2.0  (test only)
+      Copyright Square, Inc.
+
+  org.bouncycastle:bcprov-jdk18on           1.79       Bouncy Castle Licence
+      Copyright (c) 2000-2024 The Legion of the Bouncy Castle Inc.
+      https://www.bouncycastle.org/licence.html
+      (an MIT-style permissive licence)
+      Used for scrypt, which the JDK does not provide.
+
+  org.jetbrains.kotlin:kotlin-stdlib        2.1.0      Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-android
+                                            1.9.0      Apache-2.0
+      Copyright 2000-2024 JetBrains s.r.o.
+
+  androidx.compose:compose-bom              2024.12.01 Apache-2.0
+  androidx.compose.ui:ui, ui-graphics, ui-text-google-fonts,
+      ui-tooling, ui-tooling-preview                   Apache-2.0
+  androidx.compose.material3:material3                 Apache-2.0
+  androidx.compose.material:material-icons-extended    Apache-2.0
+  androidx.activity:activity-compose        1.9.3      Apache-2.0
+  androidx.appcompat:appcompat              1.7.0      Apache-2.0
+  androidx.biometric:biometric              1.1.0      Apache-2.0
+  androidx.core:core-ktx                    1.15.0     Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-compose,
+      lifecycle-runtime-compose             2.8.7      Apache-2.0
+  androidx.navigation:navigation-compose    2.8.5      Apache-2.0
+  androidx.sqlite:sqlite-framework          2.4.0      Apache-2.0
+  androidx.test:runner                      1.6.2      Apache-2.0  (test only)
+  androidx.test.ext:junit                   1.2.1      Apache-2.0  (test only)
+      Copyright The Android Open Source Project
+
+  com.android.tools:desugar_jdk_libs        2.1.3
+      GNU General Public License, version 2, with the Classpath Exception
+      https://github.com/google/desugar_jdk_libs/blob/master/LICENSE
+      Derived from OpenJDK. The Classpath Exception is what permits linking it
+      into an application without that application becoming GPL-2.0; it is
+      compatible with AGPL-3.0 distribution.
+
+  org.json:json                             20240303   Public Domain  (test only)
+      https://github.com/stleary/JSON-java/blob/master/LICENSE
+
+Build tooling (Android Gradle Plugin, the Kotlin and Compose compiler plugins,
+Gradle itself) is Apache-2.0 and is not redistributed by this project.
+
+`androidx.compose.ui:ui-text-google-fonts` fetches typefaces at runtime from the
+platform's downloadable-fonts provider. No font files are bundled in this
+repository, so no font licence applies to what is distributed here.
+
+
+================================================================================
+5. Original work
+================================================================================
+
+Everything else in this repository is original to this project and carries no
+third-party licence, including:
+
+  - The wire protocol, in both TypeScript (`packages/protocol`) and Kotlin
+    (`android/protocol`).
+  - The gateway and the oblivious relay (`packages/server`).
+  - The reference client (`packages/client`) and the Android client library
+    (`android/client`).
+  - The native self-protection library, `android/client/src/main/cpp/*` —
+    written against the Android NDK and libc headers only, with no vendored
+    third-party source.
+  - The Android application module and its UI.
+
+The cryptography is not original and is not meant to be: it is libsignal's.
+This project supplies transport, storage, and the metadata design around it.
