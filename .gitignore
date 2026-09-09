@@ -19,10 +19,6 @@ android/local.properties
 scratch/
 
 # deployment secrets
-# Nothing in the running stack reads one of these any more — the reverse proxy
-# terminates TLS and needs no DNS provider credential — but a .env under deploy/
-# has held a token that on its own is enough to repoint a hostname and mint a
-# valid certificate for it. The .env.example files stay tracked; a filled-in one
 # never does.
 deploy/**/.env
 
@@ -31,15 +27,10 @@ deploy/**/.env
 SECRET - Nogo github/
 
 # The NDK's CMake and Ninja working directory. android/*/build/ is ignored and
-# this sits beside it, so it was being offered for commit: 236 files, 2.2 MB of
-# object files and caches, every one of them naming the absolute path of the
 # machine that built it.
 android/*/.cxx/
 
 # Signing key material. Nothing here is committed today and the build reads
-# keystore paths from Gradle properties precisely so they never are — but the
-# app signing key is the one secret that cannot be rotated: leak it and someone
-# else can ship an update over yours, which for a messenger means shipping a
 # build that reads the messages. Belt as well as braces.
 *.jks
 *.keystore
@@ -67,15 +58,6 @@ local.properties
 .DS_Store
 Thumbs.db
 
-# Prose stays off the public tree. The audit documents describe live attack
-# paths, and the deployment notes named a personal machine; rather than curate
-# which markdown is safe on every future commit, none of it ships. LICENSE and
-# NOTICE carry no extension and are unaffected -- an AGPL project must ship
-# both.
-*.md
 
-# Fuzz harnesses. They exist to find defects and they are good at it, which is
-# exactly why they are not published alongside a running deployment: they hand
-# a reader a working generator for the inputs most likely to break it. They
 # stay in the working tree and still run locally.
 **/*FuzzTest.kt
